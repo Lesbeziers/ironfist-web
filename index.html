@@ -50,6 +50,11 @@
        background:#245;border-radius:8px;padding:8px 10px;min-width:64px}
   .opt canvas{width:40px;height:40px;image-rendering:pixelated}
   .opt small{font-size:11px;color:#9cf}
+  /* LO QUE AHORA NO SE PUEDE USAR SE VE, PERO EN GRIS. Enseñar el
+     inventario entero en cada casilla es lo que pidio Wilson: asi el
+     jugador sabe siempre con que cuenta, y ver la gelatina apagada sobre
+     un acero le dice que esa pieza no se pinta. */
+  .opt.gris{opacity:.28;filter:grayscale(1)}
 </style>
 
 <div id="todo">
@@ -1016,12 +1021,13 @@ function miniatura(pieza, ley) {
   return c;
 }
 
-function opcion(rejilla, etiqueta, dibujo, accion) {
+function opcion(rejilla, etiqueta, dibujo, accion, activo = true) {
   const d = document.createElement('div'); d.className = 'opt';
   if (dibujo) d.appendChild(dibujo);
   const s = document.createElement('small'); s.textContent = etiqueta;
   d.appendChild(s);
-  d.onclick = () => { cierraMenu(); accion(); pinta(); };
+  if (activo) d.onclick = () => { cierraMenu(); accion(); pinta(); };
+  else d.classList.add('gris');     // se ve, pero no se puede usar
   rejilla.appendChild(d);
 }
 
@@ -1036,35 +1042,45 @@ function abreMenu(i) {
   const mia = puestas.find(p => p[1]*16+p[0] === i);
   const rej = document.getElementById('menurejilla'); rej.innerHTML = '';
 
-  if (!pieza) {
-    // CASILLA VACIA: solo se puede PONER algo. (El aire no se pinta: es
-    // regla de Wilson desde el 2/11/2026, `leyok[0] = 000`.)
-    for (const t in stockP) if (stockP[t] > 0)
-      opcion(rej, (NOMBRE[t]||('#'+t)) + ' x' + stockP[t], miniatura(+t, null),
-             () => pon(+t, i));
-  } else {
-    if (mia) {
-      const t = mia[2];
-      if (D.girar[t] !== t)   opcion(rej, 'GIRAR',  miniatura(D.girar[t], null),   () => cambia(mia, D.girar[t]));
-      if (D.refleja[t] !== t) opcion(rej, 'ESPEJO', miniatura(D.refleja[t], null), () => cambia(mia, D.refleja[t]));
-      opcion(rej, 'QUITAR', null, () => quita(mia));
-    } else if (!esBoca(pieza) && !SALCODO[pieza]) {
-      // EL DECORADO TAMBIEN SE GIRA (Wilson, 7/11/2026) menos los cañones,
-      // que son de dos casillas y se duplicarian.
-      if (D.girar[pieza] !== pieza)
-        opcion(rej, 'GIRAR', miniatura(D.girar[pieza], null), () => giraFijo(i, D.girar[pieza]));
-      if (D.refleja[pieza] !== pieza)
-        opcion(rej, 'ESPEJO', miniatura(D.refleja[pieza], null), () => giraFijo(i, D.refleja[pieza]));
-    }
-    // LOS MODIFICADORES: solo los que la pieza admite (tabla LEYOK, la
-    // misma del juego: el acero no admite ninguno, el ladrillo los tres).
-    const BIT = {1:1, 4:2, 5:4};
-    for (const m in stockM) if (stockM[m] > 0 && (S.LEYOK[pieza] & BIT[m]) && ley === L_NONE)
-      opcion(rej, NOMLEY[m] + ' x' + stockM[m], miniatura(pieza, +m), () => pinta_ley(i, +m));
-    if (ley !== L_NONE && pinturas.some(p => p[1]*16+p[0] === i))
-      opcion(rej, 'GOMA', null, () => despinta(i));
+  // EL MENU ENSEÑA SIEMPRE TODO LO QUE TIENES, y atenua lo que ahora no
+  // se puede usar (Wilson, 9/11/2026). Antes solo salia lo aplicable, asi
+  // que el jugador no sabia con que contaba hasta dar con la casilla
+  // adecuada: el inventario se escondia de casilla en casilla.
+  // Atenuado tambien ENSEÑA: ver la gelatina en gris sobre un acero dice
+  // "esta pieza no se pinta" mucho mejor que no verla.
+
+  // --- las piezas: se ponen en casilla VACIA ---
+  for (const [t, total] of nivel.inv) {
+    const quedan = stockP[t] || 0;
+    opcion(rej, (NOMBRE[t]||('#'+t)) + ' ' + quedan + '/' + total,
+           miniatura(t, null), () => pon(t, i),
+           !pieza && quedan > 0);
   }
-  opcion(rej, 'CERRAR', null, () => {});
+  // --- los modificadores: se pintan SOBRE una pieza que los admita ---
+  // (el aire no se pinta: regla de Wilson del 2/11/2026, `leyok[0]=000`)
+  const BIT = {1:1, 4:2, 5:4};
+  for (const [m, total] of nivel.pots) {
+    const quedan = stockM[m] || 0;
+    const vale = pieza && quedan > 0 && (S.LEYOK[pieza] & BIT[m]) && ley === L_NONE;
+    opcion(rej, NOMLEY[m] + ' ' + quedan + '/' + total,
+           miniatura(pieza || null, m), () => pinta_ley(i, m), !!vale);
+  }
+  // --- y las acciones sobre lo que haya en la casilla ---
+  const gira = mia ? D.girar[mia[2]] : (pieza ? D.girar[pieza] : 0);
+  const esp  = mia ? D.refleja[mia[2]] : (pieza ? D.refleja[pieza] : 0);
+  // EL DECORADO TAMBIEN SE GIRA (7/11/2026) menos los cañones, que son de
+  // dos casillas y se duplicarian.
+  const sePuedeGirar = !!pieza && (mia || (!esBoca(pieza) && !SALCODO[pieza]));
+  opcion(rej, 'GIRAR',  gira ? miniatura(gira, null) : null,
+         () => mia ? cambia(mia, gira) : giraFijo(i, gira),
+         sePuedeGirar && gira !== (mia ? mia[2] : pieza));
+  opcion(rej, 'ESPEJO', esp ? miniatura(esp, null) : null,
+         () => mia ? cambia(mia, esp) : giraFijo(i, esp),
+         sePuedeGirar && esp !== (mia ? mia[2] : pieza));
+  opcion(rej, 'GOMA', null, () => despinta(i),
+         pinturas.some(p => p[1]*16+p[0] === i));
+  opcion(rej, 'QUITAR', null, () => mia && quita(mia), !!mia);
+  opcion(rej, 'CERRAR', null, () => {}, true);
   document.getElementById('menu').style.display = 'flex';
 }
 function cierraMenu(){ document.getElementById('menu').style.display = 'none'; }
@@ -1094,7 +1110,11 @@ function quita(p) {
     puestas = puestas.filter(q => q[1]*16+q[0] !== i2);
   }
   stockP[t]++;
+  // Y LAS PINTURAS QUE LLEVARA ENCIMA VUELVEN AL BOTE. Antes se borraban
+  // del tablero y se perdian: gastabas un rebote, quitabas la pieza, y el
+  // rebote ya no estaba en ningun sitio (Wilson, en CORTINA DE AGUA).
   const i = p[1]*16 + p[0];
+  for (const q of pinturas.filter(q => q[1]*16+q[0] === i)) stockM[q[2]]++;
   pinturas = pinturas.filter(q => q[1]*16+q[0] !== i);
 }
 function cambia(p, nuevo) {
