@@ -32,9 +32,27 @@
      y el tablero salia tan pequeño que "casi no cabia un dedo". */
   #juego{flex:1;display:flex;align-items:center;justify-content:center;
          gap:12px;min-height:0}
+  /* EL TABLERO VA EN SU PROPIA CAJA. Sin ella, `max-width:100%` del
+     lienzo se mide contra TODO el ancho de #juego —botones incluidos—,
+     asi que el tablero se comia la barra y la echaba fuera de la
+     pantalla. La caja se encoge (min-width:0) y el lienzo se mide
+     contra el hueco que queda de verdad. */
+  /* `align-self:stretch` NO ES ADORNO: sin el, la caja mide lo que mida
+     su contenido, y entonces el `max-height:100%` del lienzo se compara
+     contra una altura que todavia no existe — o sea, no limita nada y
+     el tablero se sale por arriba y por abajo. */
+  #lienzocaja{flex:1 1 auto;min-width:0;min-height:0;align-self:stretch;
+              display:flex;align-items:center;justify-content:center}
   canvas#pan{image-rendering:pixelated;display:block;touch-action:none;
              max-width:100%;max-height:100%;object-fit:contain}
   .barra{display:flex;flex-direction:column;gap:12px;flex:0 0 auto}
+  /* DE PIE, LOS BOTONES DEBAJO. La barra al lado es para apaisado, que
+     es donde sobra ancho; en vertical robaria lo poco que hay. */
+  @media (max-aspect-ratio: 1/1) {
+    #juego{flex-direction:column}
+    .barra{flex-direction:row;justify-content:center;width:100%}
+    .barra button{min-width:0;flex:1 1 0;max-width:150px}
+  }
   button,select{font:inherit;padding:14px 16px;border:0;border-radius:8px;
          background:#234;color:#eee;min-width:104px}
   select{padding:10px 12px}
@@ -59,9 +77,19 @@
      tapan toda la ventana; solo hay una visible a la vez. */
   .pantalla{position:fixed;inset:0;background:#000;display:none;
             flex-direction:column;align-items:center;justify-content:center;
-            gap:18px;padding:14px;box-sizing:border-box;z-index:5}
-  .pantalla canvas{image-rendering:pixelated;max-width:100%;
-                   max-height:72vh;object-fit:contain}
+            gap:18px;padding:14px;box-sizing:border-box;z-index:5;
+            overflow-y:auto}
+  /* EL DIBUJO LLENA LO QUE LE DEJEN. Un lienzo de 256x192 sale en
+     pantalla a 256 pixeles si nadie le dice otra cosa: en un movil
+     se ve diminuto. Dandole ancho completo y topandolo por el ALTO
+     disponible (x4/3, que es la proporcion del Spectrum) crece todo
+     lo que puede sin deformarse ni salirse. */
+  .pantalla canvas{image-rendering:pixelated;display:block;
+                   width:100%;height:auto;max-width:calc(68vh * 4 / 3)}
+  /* El plano lleva debajo titulo, cuenta y contraseña: le toca menos
+     alto que a la portada, que solo lleva una linea. */
+  #cmini{max-width:calc(32vh * 4 / 3) !important}
+  #cplano{max-width:calc(44vh * 4 / 3) !important}
   .pantalla h1{font-size:19px;margin:0;color:#fff;letter-spacing:2px}
   .grande{font-size:19px;padding:18px 30px;min-width:230px;background:#245}
   #pie{color:#6cf;text-align:center;min-height:1.2em}
@@ -78,7 +106,7 @@
     <span id="frase"></span>
   </div>
   <div id="juego">
-    <canvas id="pan"></canvas>
+    <div id="lienzocaja"><canvas id="pan"></canvas></div>
     <div class="barra">
       <button id="bsuelta">SOLTAR</button>
       <button id="breset">VACIAR</button>
