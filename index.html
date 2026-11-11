@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<!--
+  OPERATION IRON FIST — version para jugar con el dedo.
+
+  NO ES UN PUERTO: el motor de abajo es sim2.js, el MISMO que se verifica
+  fotograma a fotograma contra el Z80 en las 21 fases. Esto le pone
+  pantalla y dedos; la fisica es la del juego de verdad.
+
+  LOS GRAFICOS SALEN DEL BINARIO: las teselas, los atributos y el marco se
+  leen de editor.bin / banco1.bin al generar este fichero (mkweb.py), asi
+  que se ve como el Spectrum y no como una imitacion.
+
+  EL CONTROL, SEGUN WILSON: un toque mueve el cursor, un segundo toque en
+  la MISMA casilla abre el menu. De ahi en adelante, todo de un toque. Es
+  exactamente lo que hace el juego con las teclas y ESPACIO, asi que quien
+  sepa jugar en el Spectrum no tiene nada que reaprender.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Operation Iron Fist</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;color:#ccc;
+            font:14px/1.3 system-ui,sans-serif;-webkit-text-size-adjust:100%;
+            touch-action:manipulation;overscroll-behavior:none}
+  #todo{display:flex;flex-direction:column;align-items:center;gap:8px;padding:8px}
+  canvas{image-rendering:pixelated;display:block;touch-action:none}
+  .barra{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  button{font:inherit;padding:10px 14px;border:0;border-radius:6px;
+         background:#234;color:#eee;min-width:68px}
+  button:active{background:#46a}
+  button[disabled]{opacity:.3}
+  #titulo{font-weight:bold;color:#fff;text-align:center}
+  #frase{color:#6cf;text-align:center;min-height:1.2em}
+  #menu{position:fixed;inset:0;background:#000b;display:none;
+        align-items:center;justify-content:center;padding:12px}
+  #menucaja{background:#123;border-radius:10px;padding:12px;max-width:94vw}
+  #menurejilla{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:90vw}
+  .opt{display:flex;flex-direction:column;align-items:center;gap:2px;
+       background:#245;border-radius:8px;padding:6px 8px;min-width:56px}
+  .opt canvas{width:32px;height:32px}
+  .opt small{font-size:10px;color:#9cf}
+  #lista{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:95vw}
+  #lista button{min-width:0;padding:8px 10px;font-size:13px}
+</style>
+
+<div id="todo">
+  <div id="titulo"></div>
+  <div id="frase"></div>
+  <canvas id="pan"></canvas>
+  <div class="barra">
+    <button id="bsuelta">SOLTAR</button>
+    <button id="breset">REINICIAR</button>
+    <button id="bsalir">NIVELES</button>
+  </div>
+  <div id="lista"></div>
+</div>
+
+<div id="menu"><div id="menucaja"><div id="menurejilla"></div></div></div>
+
+<script>// ===== NUCLEO DE SIMULACION CON LEYES DE COLOR (solo enteros) =====
+const COLS = 16, ROWS = 12;
+const T = { EMPTY: 0, BRICK: 1, RAMPR: 2, RAMPL: 3, TRAMP: 4, BELTR: 5, BELTL: 6, GOAL: 7, STEEL: 8, FAN: 9, IMAN: 10, RAMPTR: 11, RAMPTL: 12,
+             SW: 13, DOOR: 14, SWON: 15, DOOROPEN: 16, SKULL: 17, WATER: 18,
+             TRAPILLA: 19, TRAPABIERTA: 20,
+             TUBOR: 21, TUBOL: 22, TOBERA: 23, CODOR: 24, CODOL: 25,
+             C2AD: 26, C2AI: 27, C2BI: 28, C2BD: 29,
+             BOCA0: 30, BOCA3: 33,
+             C2DB: 34, C2DA: 35, C2IA: 36, C2IB: 37,
+             VBOCA0: 38, VBOCA3: 41,
+             PIN0: 42, PIND: 43, PINB: 44, PINI: 45, PIN3: 45, ROMBO: 46, BUMPER: 47 };
+// EL TUBO DE DOS CASILLAS (4/11/2026). El codo lleva el embudo dentro y la
+// BOCA va pegada al lado, asi que no hay nada que buscar: la boca es
+// codo+sentido y la salida codo+2*sentido. Cuatro montajes —entrar por
+// arriba o por abajo, disparar a un lado o al otro— y todos se portan
+// igual. Las piezas del tubo viejo de tres casillas (21..25) siguen
+// existiendo pero ya no tragan nada: son decorado solido.
+// EL TUBO SON TRES PIEZAS: la TOBERA (23, por ahi entra la bola), el CODO
+// (24 dcha / 25 izda) y el CAÑON (21 dcha / 22 izda, por ahi sale). Se
+// montan tobera encima, codo debajo, canon al lado.
+//
+// EMPEZO SIENDO UNA SOLA CASILLA y no valia: la bola reaparecia pegada a
+// donde entro y el ojo lo leia como un rebote exagerado, no como un
+// recorrido. Wilson: "es tan pequeño que el tiempo que pasa dentro no se
+// aprecia". Con tres casillas la entrada y la salida estan separadas de
+// verdad.
+//
+// Es el unico sitio del juego que convierte caida en avance SIN parabola.
+// SOLIDO POR TODAS PARTES MENOS POR LA TOBERA (Wilson: "si entra al reves,
+// choca con el. No entra").
+// LA TRAMPILLA (19) es un suelo que te juzga por la VELOCIDAD. Si pasas por
+// encima lanzado, es un bloque como otro cualquiera; si te paras encima o
+// casi, se abre (20) y caes. NO SE VUELVE A CERRAR: en este juego nunca se
+// vuelve atras, y una trampilla que se cierra convertiria el nivel en
+// cronometrar, que es la mecanica que Wilson descarto. No se ofrece en el
+// inventario: se coloca fija al diseñar el nivel.
+// EL AGUA (18) ES UNA PIEZA desde el 2/11/2026, no un modificador. No es
+// solida: la bola entra, se frena y FLOTA. La vieja ley del agua se quedo
+// con el frenazo y pasa a llamarse GELATINA (ley 1), que NO hace flotar.
+// LA CALAVERA (17) es ACERO QUE MATA: solida para el choque, pero en vez de
+// rebotar deja la bola clavada donde toco y da la partida por perdida. Nunca
+// se ofrece en el inventario: se coloca fija al diseñar el nivel.
+// (el GIRO se retiro el 2026-10-20: no aportaba. La fisica completa de las
+//  orientaciones esta en sim2_con_giro.js y en el HANDOFF, secciones 14 y 16.)  // ventilador que sopla a la IZQUIERDA
+// tinta del Spectrum = ley fisica.  OJO: desde 2026-10-18 el HIELO es CIAN y
+// el AGUA es AZUL (antes al reves). Usa C.HIELO / C.AGUA, no C.BLUE / C.CYAN.
+const C = { NONE: 7, BLUE: 1, GREEN: 4, CYAN: 5, AGUA: 1, HIELO: 5 };
+const G = 4, MAXV = 96, MAXH = 64, BELT = 24, BOUNCE = 96, SPRING = 76;
+// EL CAÑON, EN TRES NUMEROS.
+// Lo que hace que parezca un cañon NO es la velocidad: el motor recorta la
+// horizontal a MAXH=64 y no hay forma de pasar de ahi sin tocar las 14
+// fases (medido el 3/11/2026: disparando a 64, 80 o 96 la bola avanza
+// exactamente lo mismo). Lo que lo hace es que NO CAE: durante TUBOREC
+// fotogramas se le quita la gravedad y la trayectoria es una regla.
+const TUBOV = MAXH;      // a que sale disparada
+// Lo que tarda dentro del tubo. Incluye el DISPARO —la boca retrocede, el
+// humo sale de pequeño a grande y entonces sale la bola—, que en el Z80 es
+// solo dibujo pero aqui tiene que contarse igual o los dos motores se
+// separan. Tiene que valer lo MISMO que TUBOT2 en editor.asm.
+const TUBOT2 = 20;
+const TUBOREC = 16;      // fotogramas sin gravedad al salir = 4 casillas
+const FANUP = 8, FANMAX = 48;
+// LA TRAMPILLA SOLO CEDE CON LA BOLA PARADA (2/11/2026). Tuvo un umbral de
+// velocidad (8) y Wilson lo encontro demasiado permisivo: "solo se abre si
+// se pasa casi casi parado o si te quedas parado". No es tan estricto como
+// parece: por debajo de 8 el rozamiento quita una unidad por fotograma, asi
+// que la bola que llega despacio se para en menos de dos pixeles.
+// FLOTABILIDAD DEL AGUA (2/11/2026). El agua ya frenaba; ahora ademas
+// EMPUJA HACIA ARRIBA, despacio. No es un muelle: la bola se hunde un par
+// de casillas y sube a flote, y se queda en la SUPERFICIE en vez de en el
+// fondo. Medido: no rompe ninguna de las 14 soluciones.
+const FLOTA = 2, SUBEMAX = 10;
+// EL CHAPUZON (9/11/2026). Al ENTRAR en el agua la bola pierde de golpe
+// un cuarto de su velocidad horizontal.
+//
+// POR QUE UN GOLPE Y NO MAS ROZAMIENTO: el agua ya frenaba un 27% por
+// casilla, pero NO SE VEIA, porque el empuje hacia arriba pasaba en el
+// MISMO fotograma y tapaba el frenazo. Wilson, jugando: "me espero un
+// frenazo, no letal, pero frenazo, y lo que veo es que la atraviesa
+// practicamente a la misma velocidad a la vez que la levanta. El agua no
+// ha hecho su trabajo en pantalla". Tenia razon aunque los numeros
+// parecieran darmela a mi: el problema no era cuanto frenaba, era CUANDO.
+//
+// Separandolo —primero el golpe, luego la flotabilidad— cruzar una
+// casilla pasa de costar el 27% de la velocidad al 49%. Y en el Z80 son
+// nueve bytes, que es lo unico que cabia en el banco 2.
+// Tiene que valer lo MISMO que CHAPUZON en editor.asm.
+const CHAPUZON = 2;      // desplazamiento: 2 = pierde un cuarto
+// EL FRENAZO DE LA GELATINA, EN MEDIOS. Va en medios y no en enteros
+// porque entre 1 y 2 Wilson necesitaba un intermedio: con 1 apenas se
+// distinguia de una casilla desnuda y con 2 frenaba de mas. 3 = uno y
+// medio, y se consigue acumulando: se gasta una unidad cada vez que el
+// acumulador llega a 2. NO LO TOQUES A OJO: esta medido con el.
+const GELFREN = 3;
+// EL SOPLIDO SE DESVANECE (2026-11-01). Antes el alcance era infinito y un
+// ventilador en el suelo levantaba una bola que pasaba por el techo: daba
+// IGUAL en que fila de la columna lo pusieras, y sin decision no hay puzzle.
+//
+// OJO AL CAMPO CERCANO: los cuatro primeros valores son el 8 de siempre, a
+// proposito. Una prueba que empezaba en 10 mato la fase 9, que usa UNA fila
+// de distancia. Al cortar la cola no se toca el principio.
+//
+// Y el alcance de verdad NO es donde la tabla llega a cero: al subir, la
+// bola se acerca y el soplido crece, asi que lo que manda es la distancia
+// de EQUILIBRIO, donde la fuerza iguala a la gravedad (G=4). Aqui, 6 filas:
+// la mitad del tablero, que es el limite real.
+//
+// ESTA TABLA ESTA DUPLICADA en editor.asm (etiqueta `fank`). _regresion.js
+// las compara sola, como ya hace con leyok.
+//   indice = filas de separacion entre la bola y el ventilador
+const FAN_K = [8, 8, 8, 8, 8, 4, 2, 0];
+// IMAN (2026-10-22). Media cupula de radio IMAN_R centrada en el, que SOLO
+// actua sobre lo que le pasa por encima. Tira hacia si mismo con mas fuerza
+// cuanto mas cerca, asi que el jugador lo gradua con la punteria: pasar alto
+// es un empujoncito, pasar rozandolo te dobla el arco entero -- y te arriesgas
+// a quedarte pegado. No alarga el salto: lo AGACHA (al pasarlo, tira hacia
+// atras y frena tanto como te empujo al venir).
+// GENERADO por mkiman.py, que escribe tambien iman.inc para el Z80: la misma
+// cuenta en los dos sitios, que es la unica forma de que no se separen.
+const IMAN_R = 48;
+const IMAN_K = [255,255,255,255,255,255,255,255,255,255,243,215,192,172,155,140,128,116,106,97,89,82,75,69,64,58,54,49,45,41,38,35,32,29,26,23,21,19,16,14,12,10,9,7,5,4,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+// RAMPA v2 (fase 2, 2026-10-20). Tres cambios y el porque de cada uno:
+//  1. APOYADA: antes la bola quedaba 1 px por encima de la diagonal y perdia
+//     el contacto; la rampa solo empujaba en los fotogramas en que lo tocaba,
+//     asi que ir despacio daba MAS empujones. Ahora el contacto no se pierde.
+//  2. CONSERVA EL IMPULSO: al llegar, la caida se convierte en avance
+//     (en 45 grados, la mitad de la suma). Caes de mas alto, sales mas lejos.
+//  3. ACELERA POR GRAVEDAD: en 45 grados, la componente horizontal es G/2.
+//     El hielo no roza; lo normal, si.
+// El roce IGUALA a la gravedad: una rampa normal MANTIENE la velocidad que
+// traes (convierte la caida y ya), y el hielo, que no roza, te ACELERA.
+// Con roce 1 el hielo apenas se notaba: en rampas largas, cero diferencia,
+// porque las dos saturaban en MAXH.
+const RAMPA_G = 2, RAMPA_ROCE = 2, ESPONJA = 3;
+// Que modificadores admite cada pieza. Bit0 = agua, bit1 = verde, bit2 = hielo.
+// ESTA TABLA ESTA DUPLICADA en editor.asm (etiqueta `leyok`): es la misma lista
+// y tienen que decir lo mismo. _regresion.js las compara automaticamente, que
+// para eso ya se nos escapo una vez: cuando el cubo mojado empezo a amortiguar
+// (2026-10-21) se actualizo la del juego y no la de aqui, asi que el buscador
+// estuvo semanas sin proponer agua sobre ladrillo y contando de menos.
+const LEYOK = [
+  0b000,   // 0 casilla vacia: NADA. Solo se pinta sobre piezas BLANCAS
+           //   (regla de Wilson). Para frenar en el aire se PONE agua.
+  0b111,   // 1 ladrillo/cubo: los tres (el agua le corta el bote)
+  0b111,   // 2 rampa derecha
+  0b111,   // 3 rampa izquierda
+  0b000,   // 4 trampolin: su verbo ya es rebotar
+  0b111,   // 5 cinta derecha
+  0b111,   // 6 cinta izquierda
+  0b000,   // 7 cesta
+  0b000,   // 8 acero
+  0b000,   // 9 ventilador: su verbo ya es empujar
+  0b000,   // 10 iman: su verbo ya es atraer
+  0b111,   // 11 rampa de techo dcha: los tres (el VERDE dobla la salida)
+  0b111,   // 12 rampa de techo izda
+  0b000,   // 13 interruptor: decorado, no se pinta
+  0b000,   // 14 puerta cerrada
+  0b000,   // 15 interruptor encendido
+  0b000,   // 16 puerta abierta
+  0b000,   // 17 calavera: no se pinta nada encima
+  0b000,   // 18 agua: es una pieza de color, no se pinta encima
+  0b000,   // 19 trampilla cerrada: no se pinta (no es blanca)
+  0b000,   // 20 trampilla abierta
+  0b000,   // 21 cañon a la derecha: es una tuberia, no se pinta
+  0b000,   // 22 cañon a la izquierda
+  0b000,   // 23 tobera (del tubo viejo)
+  0b000,   // 24 codo dcha
+  0b000,   // 25 codo izda
+  0b000,   // 26 codo2 arriba-dcha: es una tuberia, no se pinta
+  0b000,   // 27 codo2 arriba-izda
+  0b000,   // 28 codo2 abajo-izda
+  0b000,   // 29 codo2 abajo-dcha
+  0b000,   // 30 boca baja dcha
+  0b000,   // 31 boca baja izda
+  0b000,   // 32 boca alta izda
+  0b000,   // 33 boca alta dcha
+  0b000,   // 34 codo2 dcha-abajo: el cañon VERTICAL (5/11/2026)
+  0b000,   // 35 codo2 dcha-arriba
+  0b000,   // 36 codo2 izda-arriba
+  0b000,   // 37 codo2 izda-abajo
+  0b000,   // 38 boca vertical
+  0b000,   // 39 boca vertical
+  0b000,   // 40 boca vertical
+  0b000,   // 41 boca vertical
+  // EL CAÑON PINBALL (42..45): una sola casilla, entra por un lado y
+  // sale por el contrario. No admite modificadores, como el angular.
+  0b000,   // 42 pinball: dispara arriba
+  0b000,   // 43 pinball: dispara derecha
+  0b000,   // 44 pinball: dispara abajo
+  0b000,   // 45 pinball: dispara izquierda
+  // EL ROMBO admite los tres, igual que una rampa: por algo ES dos
+  // rampas. Gelatina y hielo cambian la velocidad de la caida; el
+  // verde convierte sus dos caras en espejos.
+  0b111,   // 46 rombo
+  // EL BUMPER no admite ninguno: su verbo ya es rebotar, como el
+  // trampolin.
+  0b000,   // 47 bumper
+];
+// La PUERTA CERRADA es solida; la abierta y el interruptor no. El
+// interruptor se atraviesa a proposito: salta con solo rozarlo, le venga la
+// bola por donde le venga, y asi no hay rebotes raros segun el angulo.
+function isFull(t) { return t === T.BRICK || t === T.TRAMP || t === T.BELTR || t === T.BELTL || t === T.STEEL || t === T.FAN || t === T.DOOR || t === T.SKULL || t === T.TRAPILLA
+         || (t >= T.TUBOR && t <= T.PIN3) || t === T.BUMPER; }    // 21..45: todo el tubo y el
+                                                //  pinball, solidos
+
+// ?ESTE PUNTO CAE EN LA MITAD MACIZA DE UNA RAMPA? (7/11/2026)
+//
+// Hasta hoy una rampa SOLO existia para una pelota que caia sobre ella: la
+// prueba del triangulo estaba escrita en un unico sitio, la rama de caida.
+// Para una pelota que subia o que iba de lado, la casilla estaba vacia. El
+// comentario del rombo decia "en una rampa no se nota, porque parece
+// abierta por arriba" -- y Wilson vio que SI se nota: la bola atraviesa la
+// rampa por debajo, y en una escalera de dos rampas se cuela por la junta
+// y sale por debajo sin tocar nada (pantallazo BUG 17).
+//
+// La forma no cambia: la mitad vacia sigue vacia. Lo que cambia es que
+// ahora la misma prueba se hace en las TRES rutinas de choque, no en una.
+// Y la geometria se porta sola: una rampa derecha (cara que baja hacia la
+// derecha, material abajo-izquierda) es pared entera por su costado
+// izquierdo y esta abierta por el derecho, que es justo lo que se ve.
+// ?ES PARED ESTA RAMPA POR EL COSTADO? (7/11/2026)
+//
+// Hacen falta DOS condiciones, y cada una viene de un intento fallido:
+//
+// 1. QUE LE LLEGUE POR EL LADO ALTO. Una rampa tiene tres lados distintos:
+//    la CARA (la diagonal, por donde la bola sube y baja rodando), el LADO
+//    ALTO (el canto vertical, que es una pared) y el CULO (el canto de
+//    abajo, que es un techo). Una rampa DERECHA baja hacia la derecha: su
+//    material esta abajo-izquierda y su lado alto es el IZQUIERDO.
+//    Sin esta condicion se cierra tambien el lado bueno y la bola deja de
+//    poder SUBIR la rampa rodando, que es media razon de ser de la pieza:
+//    en el nivel de Wilson dejo de subir la escalera de dos rampas
+//    (entraba a vx=-64 y salia rebotada a vx=+30).
+//
+// 2. QUE NO ESTE POSANDOSE. El motor mueve primero en horizontal y luego
+//    en vertical, asi que una bola que cae en diagonal SOBRE la cara tiene
+//    el borde delantero rozando el triangulo un fotograma antes de
+//    apoyarse. Sin esta condicion la rampa escupe de lado a una bola que
+//    venia a aterrizar: rompia LA CHIMENEA y otras once (medido, fotograma
+//    49: el borde entraba UN pixel). Aterrizando solo roza por abajo; en un
+//    choque de verdad la bola esta metida entera, borde de arriba incluido.
+// SUBIR POR LA CARA DE LA RAMPA (7/11/2026).
+//
+// Hasta hoy una rampa solo existia para una bola que CAIA: la prueba del
+// triangulo estaba en la rama de caida y en ningun sitio mas. Una bola que
+// viaja recta —disparada por un cañon— o que sube —flotando en el agua— no
+// la veia y la cruzaba por donde pillara. Wilson lo vio en el taller: la
+// bola atravesaba la rampa de arriba "en trayectoria totalmente horizontal
+// justo por el borde inferior", y con un agua en medio la atravesaba por la
+// mitad (medido en su propio nivel: 4 fotogramas con el centro DENTRO del
+// material, a vx=-49 y vy=0).
+//
+// La rampa ya sabe convertir CAIDA en AVANCE. Esto es lo simetrico:
+// convierte CARRERA en SUBIDA. La bola no rebota —eso haria inservibles las
+// combinaciones de cañon y rampa que Wilson esta usando— sino que se apoya
+// en la cara y la va subiendo, que es lo que la pieza significa.
+//
+// Se reutiliza la misma colocacion que usa la rama de caida (apoyada, con
+// el centro 4 px por encima de la diagonal) para que las dos formas de
+// tocar la rampa dejen la bola exactamente igual.
+function rampaSubePorLaCara(grid, b, i, px, cy, haciaDerecha) {
+  const t = grid[i];
+  if (t !== T.RAMPR && t !== T.RAMPL) return false;
+  // la CARA es el lado bajo: la derecha de una rampa derecha y al reves
+  if (haciaDerecha === (t === T.RAMPR)) return false;   // eso es el canto, no la cara
+  if (!enRampa(t, px, cy)) return false;
+  const lx = px & 15, top = cy & 0xF0;
+  b.y = (top + (t === T.RAMPR ? lx : 15 - lx) - 4) << 4;
+  if (b.vy > 0) b.vy = 0;        // deja de caer: ahora va cuesta arriba
+  b.ev.push('ramp');
+  return true;
+}
+// ?CABE LA BOLA DONDE LA RAMPA LA QUIERE PONER? (9/11/2026)
+//
+// La rampa coloca la bola sobre su diagonal SIN MIRAR LO QUE HAY ENCIMA.
+// Con un acero justo sobre la rampa el centro acababa DENTRO del bloque y
+// al fotograma siguiente la bola ya estaba al otro lado: se colaba entre
+// el muro y la rampa por un sitio donde no cabe. Lo vio Wilson montando la
+// fase 18 (pantallazo BUG 18). Es el tercer agujero de la rampa y los tres
+// por lo mismo: se escribio pensando solo en la bola que CAE sobre ella.
+// Primero falto el costado, luego el culo, y ahora el techo.
+//
+// VA EN LA RAMA DE LA CAIDA, NO EN LA DE SUBIR POR LA CARA, aunque por la
+// cara se llegue antes leyendo el codigo. El Z80 mueve primero en VERTICAL
+// y JavaScript primero en HORIZONTAL, asi que la misma bola entra por
+// ramas distintas en cada motor: puesta solo en la de subir, el Z80 no la
+// ejecutaba nunca (medido: una visita contra ochenta y seis). Los dos
+// motores daban el mismo numero por caminos distintos, y eso no se ve
+// comparando posiciones, que es lo unico que compara `verificaz80`.
+//
+// SI NO CABE SE QUEDA CLAVADA: ni se sube ni se deja caer a traves. El
+// fotograma siguiente la gravedad la devuelve por donde vino, que es
+// ademas lo que el jugador espera al ver que la bola no cabe.
+function atascada(grid, b, cx, ny) {
+  const a = cellOf(cx, ny - 4);
+  if (a < 0 || !isFull(grid[a])) return false;
+  b.vx = 0; b.vy = 0;
+  return true;
+}
+function rampaEsPared(t, px, cy, haciaDerecha) {
+  const altoIzquierda = (t === T.RAMPR || t === T.RAMPTR) ? true
+                      : (t === T.RAMPL || t === T.RAMPTL) ? false : null;
+  if (altoIzquierda === null || altoIzquierda !== haciaDerecha) return false;
+  if (((cy - 4) >> 4) !== (cy >> 4)) return false;      // asomando arriba: se posa
+  return enRampa(t, px, cy) && enRampa(t, px, cy - 4);
+}
+function enRampa(t, px, py) {
+  const lx = px & 15, ly = py & 15;
+  if (t === T.RAMPR)  return ly >= lx;         // misma prueba que la rama de caida
+  if (t === T.RAMPL)  return ly >= 15 - lx;
+  if (t === T.RAMPTR) return ly <= 15 - lx;    // y que la de subida, para las de techo
+  if (t === T.RAMPTL) return ly <= lx;
+  return false;
+}
+
+// ?ES UN CODO DEL TUBO DE DOS CASILLAS? Devuelve {sal, ent} o null, en
+// offsets de casilla: +-1 es a los lados, +-16 arriba y abajo. Es la misma
+// tabla que `codotab` en editor.asm y tiene que decir lo mismo.
+// LOS OCHO MONTAJES (5/11/2026): cuatro cañones horizontales, que se
+// entran por arriba o por abajo y disparan a un lado, y cuatro VERTICALES,
+// que se entran por un lado y disparan arriba o abajo.
+const CODOTAB = {
+  [T.C2AD]: { sal:  1, ent: -16 },   // entra arriba,   dispara derecha
+  [T.C2AI]: { sal: -1, ent: -16 },   // entra arriba,   dispara izquierda
+  [T.C2BI]: { sal: -1, ent:  16 },   // entra abajo,    dispara izquierda
+  [T.C2BD]: { sal:  1, ent:  16 },   // entra abajo,    dispara derecha
+  [T.C2DB]: { sal: 16, ent:   1 },   // entra derecha,  dispara abajo
+  [T.C2DA]: { sal:-16, ent:   1 },   // entra derecha,  dispara arriba
+  [T.C2IA]: { sal:-16, ent:  -1 },   // entra izquierda, dispara arriba
+  [T.C2IB]: { sal: 16, ent:  -1 },   // entra izquierda, dispara abajo
+  // EL CAÑON PINBALL: UNA SOLA CASILLA (6/11/2026). Entra por un lado y
+  // sale por el CONTRARIO —es un embolo, no un codo—, asi que su
+  // entrada es siempre menos su salida y no tiene boca.
+  [T.PIN0]: { sal: -16, ent:  16, uno: true },   // dispara arriba
+  [T.PIND]: { sal:   1, ent:  -1, uno: true },   // dispara derecha
+  [T.PINB]: { sal:  16, ent: -16, uno: true },   // dispara abajo
+  [T.PINI]: { sal:  -1, ent:   1, uno: true },   // dispara izquierda
+};
+function codo2(t) { return CODOTAB[t] || null; }
+// SE LA TRAGA. La boca de un codo es SIEMPRE el codo + 4, y tiene que
+// estar en la casilla hacia la que dispara; si no esta, el codo se porta
+// como un solido cualquiera.
+function tubatrapa(grid, b, i, c) {
+  // EL PINBALL no tiene boca que comprobar: es de una casilla.
+  if (!c.uno && grid[i + c.sal] !== grid[i] + 4) return false;
+  // Y TIENE QUE HABER SITIO DELANTE DE LA BOCA. Sin esto el cañon
+  // escupia la bola DENTRO de lo que hubiera en su casilla de salida
+  // (6/11/2026): apuntando a un muro, la bola aparecia metida en el
+  // bloque y salia por donde podia, cruzandolo. Misma regla que con la
+  // boca que falta: si no puede disparar, el codo es un solido.
+  // LA CASILLA DE SALIDA: la de al lado en el pinball, dos mas alla en
+  // el angular (ahi la primera la ocupa su boca).
+  const salida = i + (c.uno ? 1 : 2) * c.sal;
+  if (salida < 0 || salida > 191 || isFull(grid[salida])) return false;
+  b.tubo = TUBOT2;
+  b.tuboc = salida;             // la casilla de SALIDA
+  b.tubod = c.sal;
+  b.vx = 0; b.vy = 0; b.recta = 0;
+  b.ev.push('tubo');
+  return true;
+}
+
+// ?LA TRAGA UN CAÑON VERTICAL? Se llama desde los dos choques de costado.
+// `lado` es por donde entraria la bola: -1 si choca por la derecha (entra
+// por la izquierda del codo) y +1 si choca por la izquierda.
+function tubalat(grid, b, i, lado) {
+  const c = codo2(grid[i]);
+  return !!c && c.ent === lado && tubatrapa(grid, b, i, c);
+}
+
+// la bola se queda CLAVADA donde toco: ni rebota ni resbala
+function fulmina(b) { b.vx = 0; b.vy = 0; b.state = 2; }
+function cellOf(px, py) { return (px < 0 || px > 255 || py < 0 || py > 191) ? -1 : (py >> 4) * COLS + (px >> 4); }
+function clamp(v, m) { return v > m ? m : (v < -m ? -m : v); }
+// GRAVEDAD POR NIVEL (2/11/2026). 'grav' en el json del nivel: 1 = la de
+// siempre, 2 = doble. Solo multiplica la CAIDA; los impulsos (trampolin,
+// rebote, ventilador) no se tocan. Medido: con gravedad doble el trampolin
+// sube la mitad, pero el ventilador sigue levantando casi igual, asi que
+// bajo gravedad alta el aire pasa a ser la unica forma de ganar altura.
+function newBall(L, peso) { return { x: ((L.ball[0] << 4) + 8) << 4, y: ((L.ball[1] << 4) + 8) << 4, vx: 0, vy: 0, state: 0, grav: peso || L.grav || 1, tubo: 0, recta: 0,
+  // LA CESTA MOVIL: su reloj y en que casilla esta AHORA (espejo de
+  // `metareset` en editor.asm, que hace esto mismo al soltar la bola).
+  metapaso: L.metapaso | 0, metafr: 0, metacel: L.goal[1] * COLS + L.goal[0] }; }
+
+function pasofisica(grid, ink, b) {
+  if (b.state) return;
+  b.ev = [];                                   // sonidos de este frame
+  // EL SOLENOIDE DEL BUMPER, CARGANDOSE (espejo de `btick`, que en el Z80
+  // va despues de `step`: descontar al principio de este es lo mismo que
+  // descontar al final del anterior).
+  if (b.bcool > 0) b.bcool--;
+  // DENTRO DEL CAÑON: la pelota no existe. Ni cae, ni choca, ni se dibuja,
+  // ni la ve el iman. Se cuenta y se sale por la boca, disparada y recta.
+  if (b.tubo > 0) {
+    if (--b.tubo === 0) {
+      const c = b.tuboc % COLS, r = (b.tuboc / COLS) | 0;
+      b.x = ((c << 4) + 8) << 4;               // tuboc YA es la casilla de salida
+      b.y = ((r << 4) + 8) << 4;
+      // DISPARADA EN EL EJE QUE TOQUE: +-1 es horizontal, +-16 vertical
+      const vert = b.tubod === 16 || b.tubod === -16;
+      const v = b.tubod < 0 ? -TUBOV : TUBOV;
+      b.vx = vert ? 0 : v;
+      b.vy = vert ? v : 0;
+      b.recta = TUBOREC;
+      b.ev.push('tubo');
+    }
+    return;
+  }
+  // ley de la zona donde esta el centro de la pelota
+  const zc = cellOf(b.x >> 4, b.y >> 4), zone = zc < 0 ? C.NONE : ink[zc];
+  const eraAgua = b.enAgua;
+  b.enAgua = zc >= 0 && grid[zc] === T.WATER;
+  if (b.enAgua && !eraAgua) { b.ev.push('splash'); b.vx -= b.vx >> CHAPUZON; }
+  b.zone = zone;
+  const dentroAgua = zc >= 0 && grid[zc] === T.WATER;
+  if (dentroAgua) {                            // PIEZA de agua: frena y FLOTA
+    let v = b.vy + 1 - FLOTA;
+    if (v > 20) v = 20;
+    if (v < -SUBEMAX) v = -SUBEMAX;
+    b.vy = v;
+    b.vx -= b.vx >> 4;
+  } else if (zone === C.AGUA) {                // GELATINA: solo frena
+    b.vy = clamp(b.vy + 1, 20);
+    b.vx -= b.vx >> 4;
+  // RECIEN DISPARADA: se salta la GRAVEDAD, no la velocidad. Poner
+  // b.vy = 0 aqui mataba el disparo de los cañones verticales (5/11/2026).
+  } else if (b.recta > 0) { b.recta--; }
+  // EL DESCUENTO VA AQUI, no al principio del paso. Descontando arriba
+  // salen 15 fotogramas rectos en vez de 16 y el Z80 y esto se separan
+  // justo donde empieza a caer (medido el 3/11/2026, fotograma 52).
+  else b.vy = clamp(b.vy + G * b.grav, MAXV);
+  // ventilador: si hay uno debajo, en la misma columna y con linea de vision, empuja hacia arriba
+  {
+    const ccol = (b.x >> 4) >> 4, crow = (b.y >> 4) >> 4;
+    for (let rr = crow + 1; rr < ROWS; rr++) {
+      const t = grid[rr * COLS + ccol];
+      if (t === T.FAN) { const d = rr - crow, f = d < FAN_K.length ? FAN_K[d] : 0;
+        if (f) { b.vy -= f; if (b.vy < -FANMAX) b.vy = -FANMAX; }
+        break; }
+      if (isFull(t)) break;   // un solido corta el chorro
+    }
+  }
+  // IMAN. Barre las casillas que caen dentro de la cupula (3 a los lados, 3
+  // por debajo) y suma el tiron de cada uno que encuentre. Si no hay ninguno
+  // en todo el tablero, el bloque ni se entra: los niveles sin iman no pueden
+  // cambiar de comportamiento, que era la condicion para meter esto.
+  if (b.mag === undefined) { b.mag = 0; for (let k = 0; k < grid.length; k++) if (grid[k] === T.IMAN) { b.mag = 1; break; } }
+  if (b.mag) {
+    const bx = b.x >> 4, by = b.y >> 4, bc = bx >> 4, br = by >> 4;
+    for (let rr = br; rr <= br + 3; rr++) {
+      if (rr >= ROWS) break;
+      for (let cc = bc - 3; cc <= bc + 3; cc++) {
+        if (cc < 0 || cc >= COLS || grid[rr * COLS + cc] !== T.IMAN) continue;
+        const dx = (cc << 4) + 8 - bx, dy = (rr << 4) + 8 - by;
+        if (dy <= 0) continue;                        // media cupula: solo por encima
+        const a = dx < 0 ? -dx : dx;
+        const d = a > dy ? a + (dy >> 1) : dy + (a >> 1);   // distancia de octagono (sin raiz)
+        if (d >= IMAN_R) continue;
+        const k = IMAN_K[d], fx = (a * k) >> 8;       // el modulo se saca del valor
+        b.vy += (dy * k) >> 8;                        // absoluto y luego se le pone
+        let sx = dx < 0 ? -fx : fx;                   // el signo: asi el Z80 clava el mismo numero
+        // EL IMAN NO EMPUJA. Si el tiron fuese a favor de la marcha, la bola
+        // saldria disparada mas lejos que sin iman, y eso descoloca: el
+        // manual dice que atrae, y el jugador que lo prueba ve una catapulta.
+        // Con esto el iman desvia y frena, pero nunca alarga el recorrido
+        // (medido: 0 de 139 posiciones lo alargan, antes eran 9).
+        // Si la bola no lleva avance, el iman si puede arrancarla hacia el.
+        if (b.vx !== 0 && sx * b.vx > 0) sx = 0;
+        b.vx += sx;
+      }
+    }
+    b.vy = clamp(b.vy, MAXV);
+  }
+  // INTERRUPTOR Y PUERTA. Un par por nivel, los dos de decorado. Al tocar la
+  // palanca se cambia el TIPO de las dos casillas: 13->15 y 14->16. Con eso
+  // se arregla solo el dibujo Y la fisica, sin casos especiales. La puerta se
+  // queda abierta para siempre: si se volviera a cerrar habria que cronometrar,
+  // y eso es justo lo que Wilson rechazo del tiempo.
+  if (b.sw === undefined) {
+    b.sw = -1; b.door = -1;
+    for (let k = 0; k < grid.length; k++) {
+      if (grid[k] === T.SW) b.sw = k; else if (grid[k] === T.DOOR) b.door = k;
+    }
+  }
+  if (b.sw >= 0) {
+    // contacto de CAJA, no de centro: basta con rozarlo
+    const bx = b.x >> 4, by = b.y >> 4;
+    const sx = (b.sw & 15) << 4, sy = (b.sw >> 4) << 4;
+    if (bx + 4 >= sx && bx - 4 <= sx + 15 && by + 4 >= sy && by - 4 <= sy + 15) {
+      grid[b.sw] = T.SWON;
+      if (b.door >= 0) grid[b.door] = T.DOOROPEN;
+      b.sw = -1;                                  // ya esta: no se vuelve a mirar
+      b.ev.push('switch');
+    }
+  }
+  b.vx = clamp(b.vx, MAXH);
+
+  b.x += b.vx;
+  let cx = b.x >> 4, cy = b.y >> 4, i;
+  if (b.vx > 0) {
+    if (cx + 4 > 255) { b.x = 251 << 4; b.vx = -(b.vx >> 1); }
+    else if (rampaSubePorLaCara(grid, b, i = cellOf(cx + 4, cy), cx + 4, cy, true)) { /* sube por la cara */ }
+    else if (isFull(grid[i]) || rampaEsPared(grid[i], cx + 4, cy, true)) { b.x = ((((cx + 4) >> 4) << 4) - 5) << 4; if (tubalat(grid, b, i, -1)) return; if (grid[i] === T.SKULL) return fulmina(b); if (b.vx > 12) b.ev.push(grid[i] === T.BUMPER || ink[i] === C.GREEN ? 'green' : 'wall'); if (grid[i] === T.BUMPER && bumpcan(b, i)) { b.vx = -b.vx; bumpfren(b, 3, i); } else b.vx = ink[i] === C.GREEN ? -b.vx : -(b.vx >> 1); }
+  } else if (b.vx < 0) {
+    if (cx - 4 < 0) { b.x = 4 << 4; b.vx = -(b.vx >> 1); }
+    else if (rampaSubePorLaCara(grid, b, i = cellOf(cx - 4, cy), cx - 4, cy, false)) { /* sube por la cara */ }
+    else if (isFull(grid[i]) || rampaEsPared(grid[i], cx - 4, cy, false)) { b.x = ((((cx - 4) >> 4) << 4) + 20) << 4; if (tubalat(grid, b, i, 1)) return; if (grid[i] === T.SKULL) return fulmina(b); if (b.vx < -12) b.ev.push(grid[i] === T.BUMPER || ink[i] === C.GREEN ? 'green' : 'wall'); if (grid[i] === T.BUMPER && bumpcan(b, i)) { b.vx = -b.vx; bumpfren(b, 3, i); } else b.vx = ink[i] === C.GREEN ? -b.vx : -(b.vx >> 1); }
+  }
+
+  b.y += b.vy;
+  cx = b.x >> 4; cy = b.y >> 4;
+  if (b.vy >= 0) {
+    const px = cx, py = cy + 4; i = cellOf(px, py);
+    let t = i < 0 ? 0 : grid[i];
+    let law = i < 0 ? C.NONE : ink[i];
+    let lx = px & 15, esbump = false;
+    const ly = py & 15, top = py & 0xF0;
+    // EL ROMBO SE HACE PASAR POR LA RAMPA QUE TOCA (espejo de `rombea` en
+    // editor.asm). Las dos caras del dibujo de Wilson SON las dos rampas
+    // con el origen corrido: la derecha 7 columnas, la izquierda 6. Justo
+    // en el vertice se va a la derecha, porque el 8 cae de ese lado.
+    if (t === T.ROMBO || t === T.BUMPER) {
+      // EL BUMPER ES EL ROMBO CON OTRA REACCION: misma forma, pero en vez
+      // de resbalar por la cara refleja. Y reflejar ya lo sabe hacer una
+      // rampa pintada de verde, asi que se le pone esa ley y listo.
+      if (t === T.BUMPER) { law = C.GREEN; esbump = true; }
+      // JUSTO EN LA PUNTA (lx === 8) las dos caras miden lo mismo, asi que
+      // hay empate y hay que desempatar. Antes ganaba siempre la derecha y
+      // el resultado practico era que una bola soltada en vertical JAMAS
+      // tocaba la cara izquierda (Wilson, 6/11/2026: "solo reacciona a la
+      // derecha"). Ahora manda hacia donde la bola YA IBA: sigue siendo
+      // igual de reproducible, pero se puede dirigir dandole un empujon
+      // antes. Quieta del todo (vx = 0) se va a la derecha, como siempre.
+      const der = lx > 8 || (lx === 8 && b.vx >= 0);
+      if (der) { lx -= 7; t = T.RAMPR; } else { lx += 6; t = T.RAMPL; }
+    }
+    if (((t === T.RAMPR && ly >= lx) || (t === T.RAMPL && ly >= 15 - lx)) && b.vy > 24 && law !== C.GREEN) b.ev.push(law === C.HIELO ? 'ice' : 'ramp');
+    if (t === T.RAMPR && ly >= lx && atascada(grid, b, cx, top + lx - 4)) {
+      // no cabe ahi arriba: se queda clavada (ver `atascada`)
+    } else if (t === T.RAMPL && ly >= 15 - lx && atascada(grid, b, cx, top + 15 - lx - 4)) {
+      // idem
+    } else if (t === T.RAMPR && ly >= lx) {
+      b.y = (top + lx - 4) << 4;          // apoyada (el -5 dejaba 1 px de aire)
+      if (law === C.GREEN && b.vy > b.vx) { const o = b.vx; b.vx = b.vy; b.vy = o; b.ev.push('green'); if (esbump && bumpcan(b, i)) bumpfren(b, 1, i); }   // rebote en la rampa: refleja la velocidad
+      else {
+        if (b.ramp !== 1) { b.ramp = 1; b.guard = ((b.vx + b.vy) >> 1) - b.vx; }
+        // ESPONJA: la rampa no suelta el impulso de golpe, lo absorbe y lo va
+        // devolviendo. Asi se nota el "glop" al caer, y sobre todo: una rampa
+        // CORTA no llega a soltarlo todo, con lo que la longitud y el hielo
+        // vuelven a ser decisiones de diseño.
+        if (b.guard > 0) { const d = (b.guard >> ESPONJA) + 1; const dd = d > b.guard ? b.guard : d; b.vx += dd; b.guard -= dd; }   // llega: la caida pasa a avance
+        b.vx += law === C.HIELO ? RAMPA_G : RAMPA_G - RAMPA_ROCE;
+        b.vy = b.vx > 0 ? b.vx : 0;
+      }
+    } else if (t === T.RAMPL && ly >= 15 - lx) {
+      b.y = (top + 15 - lx - 4) << 4;
+      if (law === C.GREEN && b.vx + b.vy > 0) { const o = b.vx; b.vx = -b.vy; b.vy = -o; b.ev.push('green'); if (esbump && bumpcan(b, i)) bumpfren(b, 1, i); }
+      else {
+        if (b.ramp !== 2) { b.ramp = 2; b.guard = b.vx - ((b.vx - b.vy) >> 1); }
+        if (b.guard > 0) { const d = (b.guard >> ESPONJA) + 1; const dd = d > b.guard ? b.guard : d; b.vx -= dd; b.guard -= dd; }
+        b.vx -= law === C.HIELO ? RAMPA_G : RAMPA_G - RAMPA_ROCE;
+        b.vy = b.vx < 0 ? -b.vx : 0;
+      }
+    } else if (isFull(t)) {
+      b.ramp = 0; b.guard = 0;
+      const hit = b.vy;
+      b.y = (top - 5) << 4;
+      if (t === T.SKULL) return fulmina(b);
+      // 1) lo que hace la pieza
+      let target = t === T.BELTR ? BELT : t === T.BELTL ? -BELT : 0;
+      if (law === C.AGUA) target >>= 2;                          // cinta en agua: barro
+      if (target) b.vx += (target - b.vx) >> (law === C.HIELO ? 5 : 2);   // en hielo la cinta apenas agarra
+      else if (law !== C.HIELO) {
+        // ROZAMIENTO AL RODAR POR ENCIMA. El hielo no frena; lo demas pierde
+        // 1/8 por fotograma. Y la GELATINA, ademas, un FRENAZO FIJO.
+        //
+        // Un frenazo fijo y no "mas rozamiento" porque el rozamiento va por
+        // mitades (1/4, 1/8) y entre esos dos no hay nada: medido, se salta
+        // de perder 1,2 casillas a no perder ninguna. Wilson necesitaba
+        // MEDIA casilla, y eso solo se alcanza con un numero que suba de uno
+        // en uno. CALIBRADO CON EL (2/11/2026): GELFREN=2 pierde 0,4
+        // casillas con una casilla de gelatina y 2,1 con tres seguidas, asi
+        // que el freno se gradua con la cantidad que se pinte.
+        // NO LO SUBAS A OJO: mide primero. Con 1/2 la bola se quedaba
+        // clavada y con 1/4 llegaba una casilla y pico mas corta.
+        b.vx = b.vx > 0 ? (b.vx > 8 ? b.vx - (b.vx >> 3) : b.vx - 1)
+             : b.vx < 0 ? (b.vx < -8 ? b.vx - (b.vx >> 3) : b.vx + 1) : 0;
+        if (law === C.AGUA) {
+          b.gacc = (b.gacc || 0) + GELFREN;
+          const q = b.gacc >> 1;
+          b.gacc &= 1;
+          if (q) b.vx = b.vx > 0 ? Math.max(0, b.vx - q)
+                      : b.vx < 0 ? Math.min(0, b.vx + q) : 0;
+        } else b.gacc = 0;
+      }
+      // 2) como lo hace el color
+      if (t === T.TRAMP) b.ev.push('tramp'); else if (law === C.GREEN) b.ev.push('green');
+      else if (hit > 24) b.ev.push(law === C.HIELO ? 'ice' : 'thud');
+      else if (target) b.ev.push('belt');
+      if (t === T.TRAMP) b.vy = -(b.vy > BOUNCE ? b.vy : BOUNCE);
+      else if (law === C.GREEN) b.vy = -(b.vy > SPRING ? b.vy : SPRING);
+      // CUBO MOJADO: amortigua. No devuelve nada, la pelota aterriza plana.
+      // Solo el cubo: si se hace para cualquier solido se carga la fase 9,
+      // donde el agua va sobre una cinta (medido el 2026-10-21).
+      // No le quita velocidad horizontal; lo que pasa es que al no botar
+      // nunca se despega del suelo, y en el aire no hay rozamiento.
+      else b.vy = (law === C.AGUA && t === T.BRICK) ? 0 : (b.vy > 40 ? -(b.vy >> 1) : 0);
+      // LA TRAMPILLA CEDE. Se mira DESPUES del rozamiento, o sea con la
+      // velocidad que la bola tiene de verdad mientras esta posada encima.
+      // Una vez abierta se queda abierta: no se vuelve a cerrar nunca.
+      if (t === T.TRAPILLA && b.vx === 0) { grid[i] = T.TRAPABIERTA; b.ev.push('trap'); }
+      // SE LA TRAGA EL CAÑON. Se engancha donde la pelota se POSA encima,
+      // que es justo "entrar por arriba": por los lados y por abajo el tubo
+      // es solido y rebota como cualquier pieza.
+      // SE LA TRAGA EL TUBO, por arriba. Los codos por los que se entra
+      // por abajo son solidos por esta cara.
+      { const c = codo2(t); if (c && c.ent === -16) tubatrapa(grid, b, i, c); }
+    }
+  } else {
+    const py = cy - 4;
+    if (py < 0) { b.state = 2; return; }   // se escapa por arriba: perdida (el ventilador la pierde si nada la para)
+    // El sonido va con la MISMA condicion que las otras tres paredes: solo
+    // suena si el golpe trae velocidad. Aqui faltaba, y se notaba: una pelota
+    // sujeta por un ventilador contra el techo no se mueve (y se queda
+    // clavada) pero volvia a "chocar" en cada fotograma, o sea 50 golpes por
+    // segundo. Eso era el zumbido que oyo Wilson en la fase 12.
+    else if ((i = cellOf(cx, py)) >= 0 && (grid[i] === T.RAMPTR || grid[i] === T.RAMPTL)) {
+      // RAMPA DE TECHO: la unica pieza que hace algo con la SUBIDA. Hasta
+      // ahora toda la mitad de arriba de la fisica solo sabia pararse o
+      // rebotar; esto convierte el impulso vertical en avance, igual que la
+      // rampa del suelo convierte la caida.
+      const dcha = grid[i] === T.RAMPTR, lx = cx & 15, ly = py & 15;
+      // Solo convierte si la SUBIDA trae fuerza. Sin este filtro, un
+      // ventilador que empuja la bola contra la rampa la dispara en cada
+      // fotograma, y cada contacto machaca el impulso del anterior con
+      // los 8 de empuje del propio ventilador: salia desviada a 8 en vez
+      // de a 48. Mismo caso que el zumbido del techo (seccion 32).
+      const dentro = (dcha ? (ly <= 15 - lx) : (ly <= lx)) && b.vy < -24;
+      if (dentro) {
+        b.y = ((py & 0xF0) + 20) << 4;
+        if (ink[i] === C.GREEN) {            // verde: refleja, no pierde nada
+          const o = b.vx; b.vx = dcha ? -b.vy : b.vy; b.vy = dcha ? -o : o;
+          b.ev.push('green');
+        } else {                              // normal: convierte y roza
+          const sub = -b.vy;
+          b.vx += dcha ? (sub >> 1) : -(sub >> 1);
+          b.vy = 0;
+          b.ev.push('ramp');
+        }
+      }
+    }
+    // EL ROMBO ES UN TECHO POR ABAJO. Las rampas de este juego son SUELOS:
+    // solo paran lo que cae, y lo que sube las atraviesa. En una rampa no
+    // se nota, porque parece abierta por arriba; el rombo parece macizo por
+    // los cuatro lados y Wilson vio enseguida que se podia atravesar desde
+    // abajo. Decision suya (6/11/2026): que pare, como un techo. Asi la
+    // pieza no promete una cosa y hace otra.
+    // Y LAS RAMPAS DEL SUELO TAMBIEN PARAN POR ABAJO (7/11/2026). Era el
+    // caso que Wilson describio como "atraviesa la rampa por abajo, llega a
+    // la rampa de verdad, y ahi intenta actuar de rampa": el recorrido no
+    // tenia sentido visual porque la primera rampa no existia para ella.
+    else if (isFull(grid[i = cellOf(cx, py)]) || grid[i] === T.ROMBO || grid[i] === T.BUMPER
+             || enRampa(grid[i], cx, py)) {
+      // SE LA TRAGA EL TUBO, por abajo.
+      { const c = codo2(grid[i]); if (c && c.ent === 16 && tubatrapa(grid, b, i, c)) return; }
+      b.y = ((py & 0xF0) + 20) << 4;
+      if (grid[i] === T.SKULL) return fulmina(b);
+      // EL BUMPER TAMBIEN REBOTA POR ABAJO, con la misma ley verde
+      // puesta a mano y la misma perdida.
+      const verde = ink[i] === C.GREEN || grid[i] === T.BUMPER;
+      if (b.vy < -12) b.ev.push(verde ? 'green' : 'wall');
+      b.vy = verde ? -b.vy : 0;
+      if (grid[i] === T.BUMPER && bumpcan(b, i)) bumpfren(b, 2, i);
+    }
+  }
+  cy = b.y >> 4;
+  if (cy > 200) b.state = 2;
+  else if (grid[cellOf(b.x >> 4, cy)] === T.GOAL) b.state = 1;
+  // EL IMAN ES LA ANTI-CESTA: no es solido, se entra en el igual que en la
+  // cesta, y donde aquella pone "ganado" este pone "perdida". Asi el castigo
+  // sale solo de la fisica (cuanto mas cerca pasas, mas tira) y cuesta una
+  // linea, sin tocar ninguna de las cuatro rutinas de choque.
+  else if (grid[cellOf(b.x >> 4, cy)] === T.IMAN) b.state = 2;
+
+}
+
+// EL MARCO LO PONE EL JUEGO, SIEMPRE, Y AHORA AQUI TAMBIEN (2/11/2026).
+// `newlevel` en editor.asm escribe los 52 bordes DESPUES de las piezas
+// fijas del nivel, asi que manda el: tubos de acero alrededor y el suelo de
+// la fila 11 de ladrillo (que si se puede pintar, y los niveles lo usan de
+// pista). Aqui no se hacia nada de eso: se daba por hecho que cada nivel
+// traia el borde escrito a mano en su `fixed`, y trece de catorce lo
+// traian. El que no, colaba mientras su bola no tocase el borde.
+// Era la enfermedad de siempre: el marco vivia en el Z80 y en catorce
+// copias a mano, y el simulador no tenia ninguna.
+function marco(g) {
+  for (let c = 0; c < COLS; c++) { g[c] = T.STEEL; g[(ROWS - 1) * COLS + c] = T.BRICK; }
+  for (let r = 1; r < ROWS - 1; r++) { g[r * COLS] = T.STEEL; g[r * COLS + COLS - 1] = T.STEEL; }
+}
+// LA CESTA MOVIL (espejo de `metatick` en editor.asm).
+//
+// VA FUERA DE LA FISICA, no al final de ella, y la razon costo un rato:
+// `pasofisica` SE SALE ANTES DE TIEMPO mientras la bola esta dentro del
+// cañon (ahi la pelota "no existe"), asi que un tic puesto al final no
+// corria durante esos 40 fotogramas. En el Z80 `metatick` se llama desde
+// el bucle de la tirada, al lado de `gtick`, y corre SIEMPRE: el primer
+// salto de la cesta salia en el fotograma 101 en vez de en el 60.
+//
+// Se intercambia con la siguiente CALAVERA a su derecha, en su misma
+// fila, dando la vuelta al final. Los agujeros no se declaran en ninguna
+// tabla: son donde hay calaveras.
+function metatick(grid, b) {
+  if (!b.metapaso || ++b.metafr !== b.metapaso) return;
+  b.metafr = 0;
+  const fila = b.metacel & 0xF0;
+  let c = b.metacel & 15;
+  for (let k = 0; k < 16; k++) {
+    c = (c + 1) & 15;
+    const cel = fila | c;
+    if (grid[cel] === T.SKULL) {
+      grid[b.metacel] = T.SKULL;
+      grid[cel] = T.GOAL;
+      b.metacel = cel;
+      return;
+    }
+  }
+}
+
+// UN FOTOGRAMA DE TIRADA: la fisica y, detras, el reloj de la cesta.
+// Mismo orden que el bucle del Z80 (`call step` / `call metatick`).
+function step(grid, ink, b) {
+  pasofisica(grid, ink, b);
+  metatick(grid, b);
+}
+
+function buildGrid(L, placed = []) { const g = new Uint8Array(COLS * ROWS); for (const [c, r, t] of L.fixed) g[r * COLS + c] = t; marco(g); g[L.goal[1] * COLS + L.goal[0]] = T.GOAL; for (const [c, r, t] of placed) g[r * COLS + c] = t; return g; }
+// EL BUMPER PIERDE UN CUARTO EN CADA GOLPE (espejo de `bumpfren` en
+// editor.asm). Un bumper que devolviera todo no es problema con UNO -la
+// gravedad acaba ganando- pero en un pachinko con varios la bola se
+// queda patinando entre ellos y no baja nunca.
+// Espejo de `bumpfren` en editor.asm. `modo` 1 = le han dado en la cara,
+// 2 = por debajo. El LADO ya lo ha decidido la cara (el reflejo verde deja
+// vx apuntando a donde toca); lo que se tira es su VALOR, porque un bumper
+// no devuelve lo que le traes: empuja siempre lo mismo.
+const BUMPK = 56, BUMPKV = 40, BUMPCOOL = 16;
+// ?PUEDE DISPARAR? No, si es el mismo bumper que acaba de hacerlo y aun
+// esta recargando. Mientras recarga es un solido normal, que SI quita
+// velocidad: asi una bola atrapada entre dos bumpers (o entre uno y la
+// pared) pierde energia en cada vuelta en vez de realimentarse para
+// siempre, que es lo que vio Wilson.
+function bumpcan(b, cel) { return !(b.bcool > 0 && b.bcell === cel); }
+function bumpfren(b, modo, cel) {
+  b.bcell = cel; b.bcool = BUMPCOOL;
+  if (modo === 2) { b.vy = BUMPKV; return; }        // por debajo: hacia abajo
+  if (modo === 3) { b.vx = b.vx < 0 ? -BUMPK : BUMPK; return; }  // de lado
+  b.vx = b.vx < 0 ? -BUMPK : BUMPK;                 // por la cara: al lado...
+  b.vy = -BUMPKV;                                   // ...y hacia ARRIBA
+}
+function buildInk(L, paint) { const k = new Uint8Array(COLS * ROWS).fill(C.NONE); for (const [c, r, col] of (L.preset || [])) k[r * COLS + c] = col; for (const [c, r, col] of paint) k[r * COLS + c] = col; return k; }
+function run(L, paint, frames = 1500, placed = []) {
+  const g = buildGrid(L, placed), k = buildInk(L, paint), b = newBall(L); let still = 0;
+  for (let f = 0; f < frames && !b.state; f++) { step(g, k, b); if (Math.abs(b.vx) < 2 && b.vy <= 12 && b.vy >= 0) { if (++still > 100) break; } else still = 0; }
+  return b.state;
+}
+function row(r, c0, c1, t) { const a = []; for (let c = c0; c <= c1; c++) a.push([c, r, t]); return a; }
+function col(c, r0, r1, t) { const a = []; for (let r = r0; r <= r1; r++) a.push([c, r, t]); return a; }
+if (false) module.exports = { T, C, LEYOK, FAN_K, COLS, ROWS, step, newBall, buildGrid, buildInk, run, row, col };
+</script>
+<script>
+// EL MOTOR, ATADO. sim2.js declara sus funciones sueltas (esta escrito
+// para node); aqui se agrupan con el mismo nombre que usa el resto del
+// fichero, para que se lea igual que en las sondas.
+const S = { buildGrid, buildInk, newBall, step, LEYOK, T, C };
+const D = {"tiles": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "//+gBYABn/mAAZ/5gAGf+YABn/mAAYABoAWAAaqr//8=", "gADAAOAA8ACYAJwApgDHAImAkcCiYMRwiJiRHKIm//8=", "AAEAAwAHAA0AHQAzAHEAyQHFAyMHEQyJHEUyI3ER//8=", "/////0ACEAggBBAIIAQQCCAEEAggBBAIIAQAAH/+f/4=", "AAAAAB3cQAKf+b/9t/27/bv9t/2//Z/5QAId3AAAAAA=", "AAAAADu4QAKf+b/9v+2/3b/dv+2//Z/5QAI7uAAAAAA=", "AAABwANgAuAD4BHEOA4QhAHAE+Q4DhPkO64T5DgOf/8=", "f/6qq9VVqqvVVaqr1VWqq9VVqqvVVaqr1VWqq9VVf/4=", "AAAAAACA4cD8AP//AB8BwwHAP/5qr2qpaq9qr2qvP/4=", "AAAAADwePB4AADwePB48HjwePB48Hj4+H/wf/A/4A+A=", "//+IjsRMojiRMIjgxMCjgJMAjgDMALgAsADgAMAAgAA=", "//9kRTiJGREOIwZFA4kBkQDjAGUAOQAZAA8ABwADAAE=", "AAB+HIEmgWe9f7l/gT6RHJEAkf6RS5EPkfuBD3/+AAA=", "AAAAAPvfAAB//oABgIGBAYINhI2JDZIBoAGAAYABf/4=", "AAB+HIEmkWeRf5F/kT6RHJEAgf69S7kPgfuBD3/+AAA=", "AAAAAPvfAACqqYABf/4AAAAAAAAAAAAAAAAAAAAAAAA=", "f/6AAa/1j/G0Lbgdul24HbgdvD2//bZtj/Gv9YABf/4=", "AAAhCDGMKUpGMYQhIQgxjClKRjGEISEIMYwpSkYxhCE=", "f/7/+wAB1VUqqgAAAAABgAAAAYAAAAGAAAAH4APAAYA=", "AA4AGQASABkAGgAZABoAGQAaABkAGgAZABoAGQAaAAo=", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "v/5f/Cv4FVAAAAXgC+AF4AvgBeAL4AXgC+AF4AvgBeA=", "H/AVUAAABeAL4AXgC/AF+Ar+BX4CvgFeAKoAVAAqAAA=", "D/gKqAAAB6AH0AegD9AfoH9QfqB9QHqAVQAqAFQAAAA=", "v/5VXCv4FfAAAAXgC/AF+Ar+BX4CvgFeAKoAVAAqAAA=", "f/06qh/UD6gAAAegD9AfoH9QfqB9QHqAVQAqAFQAAAA=", "AABUACoAVQB6gH1AfqB/UB+gD9AHoAAAD6gf1Dqqf/0=", "AAAAKgBUAKoBXgK+BX4K/gX4C/AF4AAAFfAr+FVcv/4=", "AAAAAAAAAAAAAAAAAAKAzv9S/sL/Qv7Cq0LU0qtOgII=", "AAAAAAAAAAAAAAAAQABzAUr/Q39C/0N/QtVLK3LVQQE=", "QQFy1UsrQtVDf0L/Q39K/3MBQAAAAAAAAAAAAAAAAAA=", "gIKrTtTSq0L+wv9C/sL/UoDOAAIAAAAAAAAAAAAAAAA=", "AAEAAgAFAAsBRQKrBUUK7xXtK+9X7S/PX4cvA18BAAA=", "AABfAS8DX4cvz1ftK+8V7QrvBUUCqwFFAAsABQACAAE=", "AACA+sD04frz9Lfq99S3qPdQoqDVQKKA0ACgAEAAgAA=", "gABAAKAA0ACigNVAoqD3ULeo99S36vP04frA9ID6AAA=", "/4AvAF8ALwBfAC8AXwBVAKqAf4AAACEAQIBAgP/AAAA=", "AAD/wECAQIAhAAAAf4CqgFUAXwAvAF8ALwBfAC8A/4A=", "AAAD/wECAQIAhAAAAf4BVQCqAPoA9AD6APQA+gD0Af8=", "Af8A9AD6APQA+gD0APoAqgFVAf4AAACEAQIBAgP/AAA=", "B/AH8ACgAcACgACgAcACgACgAcAH8AAACqgV/C/+X/8=", "AACAAEAAoADQAOQD1JPmS/f/5kv1J+QD8ADgAMAAgAA=", "//p/9D+oFVAAAA/gA4AFAAFAA4AFAAFAA4AFAA/gD+A=", "AAEAAwAHAA/AJ+Sv0mf/79JnySvAJwALAAUAAgABAAA=", "AAAAgAHAAqAFkAuIF4Qvgn//IPoQ9AjoBNACoAHAAIA=", "AAAAAAPgDBgTZBd0LjosmiHCLJouOhd0E2QMGAPgAAA="], "att": [71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 4, 68, 4, 68, 71, 71, 71, 71, 71, 71, 71, 71, 6, 70, 6, 70, 5, 69, 5, 69, 5, 69, 3, 67, 2, 66, 1, 65, 71, 71, 71, 71, 71, 71, 71, 71, 70, 66, 70, 70, 6, 70, 6, 70, 70, 68, 70, 70, 6, 70, 6, 6, 2, 66, 2, 66, 65, 65, 65, 65, 6, 70, 6, 70, 70, 70, 70, 70, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 5, 69, 71, 71, 71, 71, 4, 68, 68, 4], "gel": "AAABgAPgBfAP8A/4Prg+uB/4N3oP6B/0J7YzjAYAAAA=", "riv": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "bola": "+AAfAP8A8AMPwP8A4AcH4P8A4A8HMP8A4A8HcP8A4A8H8P8A4A8H8P8A4AcH4P8A8AMPwP8A+AAfAP8A", "mgfx": "A9sP+x/bP/t/2394/pv9GPoA/AD6APwA+gD8APoA/AB//1//f/9f/2qqVVVAAEAAAAAAAAAAAAAAAAAAAAAAAP//////////qqtVVAAAAAAAAAAAAAAAAAAAAAAAAAAA//+/////v//VVaqqgACAAAAAAAAAAAAAAAAAAAAAAAD//v/+//7//lVWqqgAAAAAAAAAAAAAAAAAAAAAAAAAANvA3/Db+N/82/4e/tl/GL8AXwA/AF8APwBfAD8AXwA/AAD/AP8AVAD6APwA+gD8AAAA/wD/AFQA+gD8APoA/AAAAAD/AP8AKgBfAD8AXwA/AAAA/wD/ACoAXwA/AF8AP/oA/AD6APwA+gD8APoA/AD6APwA+gD8APoA/AD6APwAAF8APwBfAD8AXwA/AF8APwBfAD8AXwA/AF8APwBfAD/6APwA+gD8APoA/AD6APwAAAD/AP8AVAD6APwA+gD8AABfAD8AXwA/AF8APwBfAD8AAAD/AP8AKgBfAD8AXwA/+gD8APoA/AD6APwA+gD8APoA/AD6APwA+gD8APoAAAAAXwA/AF8APwBfAD8AXwA/AF8APwBfAD8AXwA/AF8AAC/4f/yAAqJK0SZq9DW4AAD//ixYLFgsWCxYLFgsWF68//4AAPc+AADj9gAA/+YAAP/OAACf3gAAh/gAAP/+AAD//oAOiA6QDqAOgA6ADoAKgAqACoAK//6/8v/+//7//v/+WCxYLP/+11bortAW5870XvRe9F70XuKO0RbgDt/2", "marco": [[0, 0, 0, 69], [1, 0, 1, 69], [2, 0, 2, 69], [3, 0, 1, 69], [4, 0, 2, 69], [5, 0, 1, 69], [6, 0, 2, 69], [7, 0, 1, 69], [8, 0, 2, 69], [9, 0, 1, 69], [10, 0, 2, 69], [11, 0, 1, 69], [12, 0, 2, 69], [13, 0, 3, 69], [14, 0, 4, 69], [15, 0, 5, 69], [0, 1, 6, 69], [15, 1, 7, 69], [0, 2, 8, 69], [15, 2, 9, 69], [0, 3, 10, 69], [15, 3, 11, 69], [0, 4, 8, 69], [15, 4, 9, 69], [0, 5, 10, 69], [15, 5, 11, 69], [0, 6, 8, 69], [15, 6, 9, 69], [0, 7, 10, 69], [15, 7, 11, 69], [0, 8, 8, 69], [15, 8, 9, 69], [0, 9, 10, 69], [15, 9, 11, 69], [0, 10, 12, 69], [15, 10, 13, 69], [0, 11, 14, 71], [1, 11, 14, 71], [2, 11, 14, 71], [3, 11, 14, 71], [4, 11, 14, 71], [5, 11, 15, 71], [6, 11, 16, 71], [7, 11, 17, 71], [8, 11, 17, 71], [9, 11, 16, 71], [10, 11, 15, 71], [11, 11, 14, 71], [12, 11, 14, 71], [13, 11, 14, 71], [14, 11, 14, 71], [15, 11, 14, 71]], "tinta": {"1": 67, "4": 68, "5": 69}, "niveles": [{"name": "PRIMER IMPULSO", "brief": "Velocidad sobre hielo", "ball": [1, 1], "goal": [11, 10], "fixed": [[0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8], [7, 5, 8], [8, 5, 8], [9, 5, 8], [8, 6, 8], [8, 7, 8], [8, 8, 8]], "preset": [], "inv": [[2, 1]], "pots": [[5, 1]]}, {"name": "POR ENCIMA DEL MURO", "brief": "Saltad Malditos!", "ball": [14, 1], "goal": [4, 10], "fixed": [[9, 7, 1], [9, 8, 1], [9, 9, 1], [9, 10, 1], [15, 0, 8], [15, 11, 1], [14, 0, 8], [14, 11, 1], [13, 0, 8], [13, 11, 1], [12, 0, 8], [12, 11, 1], [11, 0, 8], [11, 11, 1], [10, 0, 8], [10, 11, 1], [9, 0, 8], [9, 11, 1], [8, 0, 8], [8, 11, 1], [7, 0, 8], [7, 11, 1], [6, 0, 8], [6, 11, 1], [5, 0, 8], [5, 11, 1], [4, 0, 8], [4, 11, 1], [3, 0, 8], [3, 11, 1], [2, 0, 8], [2, 11, 1], [1, 0, 8], [1, 11, 1], [0, 0, 8], [0, 11, 1], [15, 1, 8], [0, 1, 8], [15, 2, 8], [0, 2, 8], [15, 3, 8], [0, 3, 8], [15, 4, 8], [0, 4, 8], [15, 5, 8], [0, 5, 8], [15, 6, 8], [0, 6, 8], [15, 7, 8], [0, 7, 8], [15, 8, 8], [0, 8, 8], [15, 9, 8], [0, 9, 8], [15, 10, 8], [0, 10, 8]], "preset": [], "inv": [[2, 1]], "pots": [[4, 1]]}, {"name": "CADENA DE MONTAJE", "brief": "Dos cintas, dos sentidos", "ball": [12, 7], "goal": [1, 10], "fixed": [[2, 10, 6], [3, 10, 6], [5, 10, 6], [7, 10, 6], [8, 10, 6], [9, 10, 6], [10, 10, 6], [11, 10, 6], [12, 10, 6], [0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8]], "inv": [[5, 3]], "pots": [], "preset": []}, {"name": "AGUA Y GELATINA", "brief": "Frena frena!", "ball": [1, 1], "goal": [6, 10], "fixed": [[1, 3, 2], [5, 7, 1], [6, 7, 19], [7, 7, 1], [5, 8, 8], [7, 8, 8], [5, 9, 8], [7, 9, 8], [5, 10, 8], [7, 10, 8]], "preset": [[1, 3, 5]], "inv": [[2, 1], [18, 1]], "pots": [[5, 1], [1, 1]]}, {"ball": [1, 1], "goal": [14, 9], "inv": [[2, 1], [4, 1], [10, 1]], "pots": [[4, 1]], "preset": [], "fixed": [[0, 0, 8], [1, 0, 8], [2, 0, 8], [3, 0, 8], [4, 0, 8], [5, 0, 8], [6, 0, 8], [7, 0, 8], [8, 0, 8], [9, 0, 8], [10, 0, 8], [11, 0, 8], [12, 0, 8], [13, 0, 8], [14, 0, 8], [15, 0, 8], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [1, 5, 8], [15, 5, 8], [0, 6, 8], [1, 6, 8], [15, 6, 8], [0, 7, 8], [1, 7, 8], [15, 7, 8], [0, 8, 8], [13, 8, 8], [15, 8, 8], [0, 9, 8], [7, 9, 1], [13, 9, 8], [15, 9, 8], [0, 10, 8], [6, 10, 1], [7, 10, 1], [8, 10, 1], [13, 10, 8], [14, 10, 8], [15, 10, 8], [0, 11, 1], [1, 11, 1], [2, 11, 1], [3, 11, 1], [4, 11, 1], [5, 11, 1], [6, 11, 1], [7, 11, 1], [8, 11, 1], [9, 11, 1], [10, 11, 1], [11, 11, 1], [12, 11, 1], [13, 11, 1], [14, 11, 1], [15, 11, 1]], "name": "IMANES CORRECTORES", "brief": "Precisi\u00f3n con el im\u00e1n"}, {"name": "PISTA DE HIELO", "brief": "Fr\u00edo selectivo", "ball": [13, 1], "goal": [4, 10], "fixed": [[1, 6, 8], [2, 6, 8], [3, 6, 8], [4, 6, 8], [5, 6, 8], [6, 6, 8], [7, 6, 8], [8, 6, 8], [9, 6, 8], [10, 6, 8], [11, 6, 8], [12, 6, 8], [3, 9, 8], [3, 10, 8], [0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8]], "preset": [], "inv": [[2, 1]], "pots": [[5, 2]]}, {"name": "EL ASCENSOR", "brief": "Suelos que rebotan y vuelos", "ball": [1, 6], "goal": [13, 4], "fixed": [[1, 8, 2], [7, 9, 1], [10, 7, 1], [13, 5, 1], [14, 5, 1], [0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8]], "preset": [[1, 8, 5]], "inv": [[9, 2]], "pots": [[4, 3]]}, {"name": "CORTINA DE AGUA", "brief": "Cruza o elude", "ball": [13, 1], "goal": [1, 10], "fixed": [[10, 2, 18], [11, 2, 18], [10, 3, 18], [11, 3, 18], [10, 4, 18], [11, 4, 18], [6, 6, 8], [6, 7, 8], [6, 8, 8], [6, 9, 8], [6, 10, 8]], "preset": [], "inv": [[2, 2], [5, 2]], "pots": [[4, 1], [5, 1]]}, {"name": "SALTO DE FE", "brief": "Conf\u00eda, calcula", "ball": [13, 1], "goal": [2, 5], "fixed": [[1, 6, 1], [2, 6, 1], [3, 6, 1], [4, 6, 1], [5, 6, 1], [0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8], [7, 1, 8], [7, 2, 8], [7, 3, 8], [7, 4, 8], [7, 5, 8], [9, 6, 8]], "inv": [[4, 1], [2, 1]], "pots": [[4, 1]], "preset": []}, {"name": "CA\u00d1ONES SON AMORES", "brief": "Fuego!", "ball": [14, 1], "goal": [1, 3], "fixed": [[2, 1, 8], [6, 1, 8], [2, 2, 14], [6, 2, 8], [2, 3, 8], [6, 3, 8], [1, 4, 8], [2, 4, 8], [6, 4, 8], [6, 5, 8], [6, 6, 13], [6, 7, 8], [6, 8, 8], [6, 9, 8], [6, 10, 8], [0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8]], "preset": [], "inv": [[2, 2], [26, 2]], "pots": [[5, 1]]}, {"name": "PUESTA EN COMUN", "brief": "Cada cosa en su lugar", "ball": [1, 1], "goal": [14, 5], "fixed": [[1, 2, 2], [2, 3, 2], [3, 4, 6], [4, 4, 6], [5, 4, 6], [11, 6, 8], [11, 7, 8], [11, 8, 8], [11, 9, 8], [11, 10, 8], [0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8]], "inv": [[4, 1]], "pots": [[5, 2], [1, 1], [4, 1]], "preset": []}, {"name": "CONTRACORRIENTE", "brief": "Izquierda o derecha?", "ball": [1, 1], "goal": [10, 10], "fixed": [[1, 3, 2], [2, 4, 2], [3, 5, 2], [4, 8, 6], [5, 8, 6], [6, 8, 6], [7, 8, 6], [8, 8, 6], [9, 8, 6], [10, 8, 6], [11, 8, 6], [14, 8, 1], [13, 9, 8], [13, 10, 8], [4, 10, 5], [5, 10, 5], [6, 10, 5], [7, 10, 5], [8, 10, 5], [9, 10, 5], [0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8]], "inv": [[9, 1], [18, 1]], "pots": [[5, 2], [1, 1]], "preset": []}, {"name": "LA CHIMENEA", "ball": [1, 1], "goal": [12, 3], "preset": [], "pots": [], "inv": [[2, 1], [5, 1], [9, 2]], "fixed": [[0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8], [4, 1, 8], [4, 2, 8], [4, 3, 8], [4, 4, 8], [10, 4, 1], [10, 5, 1], [10, 6, 1], [12, 4, 1], [12, 5, 1], [12, 6, 1], [12, 7, 1], [12, 8, 1]], "brief": "Vuela, vuela!"}, {"name": "PUERTAS AL EXITO", "brief": "Solo quien enciende pasa", "ball": [14, 7], "goal": [1, 6], "fixed": [[0, 0, 8], [0, 11, 1], [1, 0, 8], [1, 11, 1], [2, 0, 8], [2, 11, 1], [3, 0, 8], [3, 11, 1], [4, 0, 8], [4, 11, 1], [5, 0, 8], [5, 11, 1], [6, 0, 8], [6, 11, 1], [7, 0, 8], [7, 11, 1], [8, 0, 8], [8, 11, 1], [9, 0, 8], [9, 11, 1], [10, 0, 8], [10, 11, 1], [11, 0, 8], [11, 11, 1], [12, 0, 8], [12, 11, 1], [13, 0, 8], [13, 11, 1], [14, 0, 8], [14, 11, 1], [15, 0, 8], [15, 11, 1], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8], [3, 1, 8], [3, 2, 8], [3, 3, 14], [3, 4, 8], [3, 5, 8], [3, 6, 8], [7, 2, 13], [7, 3, 1], [7, 4, 1], [7, 5, 1], [7, 6, 1], [7, 7, 1], [7, 8, 1], [7, 9, 1], [7, 10, 1], [11, 3, 6], [12, 3, 6], [1, 7, 1], [2, 7, 1], [3, 7, 1], [4, 7, 1], [5, 7, 1], [6, 7, 1]], "preset": [], "inv": [[9, 2], [4, 1], [2, 3]], "pots": [[4, 1]]}, {"name": "EL ABISMO", "brief": "...por d\u00f3nde, por d\u00f3nde", "ball": [14, 1], "goal": [4, 2], "fixed": [[3, 3, 8], [4, 3, 8], [5, 3, 8], [7, 5, 8], [5, 8, 8], [6, 8, 8], [7, 8, 8], [8, 8, 8], [9, 8, 8], [5, 10, 6], [6, 10, 6], [7, 10, 6], [8, 10, 6], [9, 10, 6], [7, 3, 8], [7, 0, 8], [7, 1, 8], [7, 2, 8], [3, 2, 14], [7, 4, 13], [3, 1, 8]], "preset": [], "inv": [[1, 1], [2, 3], [10, 1], [9, 2]], "pots": [[4, 1]]}, {"name": "TIRA Y AFLOJA", "brief": "Dos cintas, una gana", "ball": [8, 1], "goal": [2, 9], "fixed": [[15, 0, 8], [15, 11, 8], [14, 0, 8], [14, 11, 8], [13, 0, 8], [13, 11, 8], [12, 0, 8], [12, 11, 8], [11, 0, 8], [11, 11, 8], [10, 0, 8], [10, 11, 8], [9, 0, 8], [9, 11, 8], [8, 0, 8], [8, 11, 8], [7, 0, 8], [7, 11, 8], [6, 0, 8], [6, 11, 8], [5, 0, 8], [5, 11, 8], [4, 0, 8], [4, 11, 8], [3, 0, 8], [3, 11, 8], [2, 0, 8], [2, 11, 8], [1, 0, 8], [1, 11, 8], [0, 0, 8], [0, 11, 8], [15, 1, 8], [0, 1, 8], [15, 2, 8], [0, 2, 8], [15, 3, 8], [0, 3, 8], [15, 4, 8], [0, 4, 8], [15, 5, 8], [0, 5, 8], [15, 6, 8], [0, 6, 8], [15, 7, 8], [0, 7, 8], [15, 8, 8], [0, 8, 8], [15, 9, 8], [0, 9, 8], [15, 10, 8], [0, 10, 8], [4, 1, 8], [4, 2, 8], [4, 3, 8], [4, 4, 8], [4, 5, 8], [9, 5, 6], [8, 5, 6], [7, 5, 6], [6, 5, 6], [12, 7, 8], [10, 7, 5], [9, 7, 5], [8, 7, 5], [7, 7, 5], [6, 7, 5], [4, 7, 5], [5, 8, 8], [5, 10, 8], [4, 10, 9], [3, 10, 17], [2, 10, 8], [1, 10, 17]], "preset": [], "inv": [[5, 1], [2, 1]], "pots": [[4, 2]]}, {"name": "Randomize USR 0", "brief": "Cuesti\u00f3n de azar... \u00bfo no?", "ball": [8, 1], "goal": [13, 1], "fixed": [[0, 0, 8], [0, 11, 8], [1, 0, 8], [1, 11, 8], [2, 0, 8], [2, 11, 8], [3, 0, 8], [3, 11, 8], [4, 0, 8], [4, 11, 8], [5, 0, 8], [5, 11, 8], [6, 0, 8], [6, 11, 8], [7, 0, 8], [7, 11, 8], [8, 0, 8], [8, 11, 8], [9, 0, 8], [9, 11, 8], [10, 0, 8], [10, 11, 8], [11, 0, 8], [11, 11, 8], [12, 0, 8], [12, 11, 8], [13, 0, 8], [13, 11, 8], [14, 0, 8], [14, 11, 8], [15, 0, 8], [15, 11, 8], [0, 1, 8], [15, 1, 8], [0, 2, 8], [15, 2, 8], [0, 3, 8], [15, 3, 8], [0, 4, 8], [15, 4, 8], [0, 5, 8], [15, 5, 8], [0, 6, 8], [15, 6, 8], [0, 7, 8], [15, 7, 8], [0, 8, 8], [15, 8, 8], [0, 9, 8], [15, 9, 8], [0, 10, 8], [15, 10, 8], [11, 1, 8], [11, 2, 8], [11, 3, 8], [11, 4, 8], [11, 5, 8], [11, 6, 8], [11, 7, 8], [11, 8, 8], [13, 2, 8], [5, 5, 46], [7, 5, 46], [9, 5, 46], [6, 7, 46], [8, 7, 46], [1, 8, 17], [1, 9, 8], [2, 9, 8], [3, 9, 8], [4, 9, 19], [5, 9, 17], [6, 9, 17], [7, 9, 17], [8, 9, 17], [9, 9, 17], [1, 10, 8], [2, 10, 8], [13, 5, 8]], "preset": [], "inv": [[2, 4], [26, 1], [9, 2], [5, 1]], "pots": [[5, 1], [1, 2]]}, {"name": "HACER LA PARED", "brief": "Una pared, como en el f\u00fatbol", "ball": [2, 1], "goal": [14, 7], "fixed": [[3, 1, 8], [4, 1, 8], [5, 1, 8], [7, 1, 8], [8, 1, 8], [9, 1, 8], [11, 1, 8], [12, 1, 8], [13, 1, 8], [14, 1, 8], [4, 5, 8], [5, 5, 8], [6, 5, 8], [7, 5, 8], [8, 5, 8], [9, 5, 8], [4, 6, 8], [5, 6, 8], [6, 6, 8], [7, 6, 8], [8, 6, 8], [9, 6, 8], [10, 6, 8], [11, 6, 8], [12, 6, 8], [13, 6, 8], [14, 6, 19], [1, 8, 8], [2, 8, 8], [3, 8, 8], [4, 8, 8], [11, 8, 8], [12, 8, 8], [13, 8, 8], [14, 8, 8], [5, 10, 17], [6, 10, 17], [7, 10, 17], [8, 10, 17], [9, 10, 17], [10, 10, 17], [5, 2, 8], [5, 3, 8], [5, 4, 8]], "preset": [], "inv": [[47, 1], [2, 2], [9, 1]], "pots": [[1, 1], [5, 1]]}, {"name": "REACCION EN CADENA", "brief": "Enlaza y pasa", "ball": [1, 1], "goal": [14, 1], "fixed": [[3, 1, 8], [12, 1, 8], [3, 2, 8], [5, 2, 8], [6, 2, 8], [12, 2, 8], [3, 3, 8], [5, 3, 8], [12, 3, 17], [3, 4, 8], [5, 4, 13], [12, 4, 8], [3, 5, 8], [5, 5, 8], [8, 5, 46], [10, 5, 46], [12, 5, 8], [3, 6, 8], [5, 6, 8], [12, 6, 8], [3, 7, 8], [4, 7, 8], [5, 7, 8], [12, 7, 8], [8, 8, 1], [12, 8, 8], [8, 9, 17], [12, 9, 14], [8, 10, 1], [11, 10, 5], [12, 10, 5], [13, 10, 5]], "preset": [], "inv": [[2, 2], [26, 2], [9, 2], [18, 1], [10, 1], [42, 1]], "pots": [[4, 1]]}, {"name": "360", "brief": "Da la vuelta", "ball": [1, 1], "goal": [7, 5], "fixed": [[6, 2, 8], [8, 2, 8], [5, 3, 8], [6, 3, 8], [8, 3, 8], [9, 3, 8], [4, 4, 8], [5, 4, 8], [9, 4, 8], [10, 4, 8], [4, 5, 13], [5, 5, 8], [10, 5, 14], [4, 6, 8], [5, 6, 8], [10, 6, 8], [11, 6, 8], [5, 7, 8], [6, 7, 8], [8, 7, 8], [9, 7, 8], [6, 8, 8], [8, 8, 8], [7, 2, 8], [7, 6, 8], [8, 6, 1], [9, 6, 1]], "preset": [], "inv": [[47, 1], [2, 2], [26, 1], [4, 1], [9, 1]], "pots": [[5, 2]]}, {"name": "CHIP PACHINKO", "brief": "10...9...8...", "ball": [13, 8], "goal": [2, 10], "fixed": [[1, 3, 8], [3, 3, 8], [5, 3, 8], [7, 3, 8], [9, 3, 8], [11, 3, 8], [2, 4, 46], [4, 4, 46], [6, 4, 46], [8, 4, 46], [10, 4, 46], [11, 4, 8], [1, 5, 47], [3, 5, 47], [5, 5, 47], [7, 5, 47], [9, 5, 47], [11, 5, 8], [2, 6, 46], [4, 6, 46], [6, 6, 46], [8, 6, 46], [10, 6, 46], [11, 6, 8], [1, 7, 47], [3, 7, 47], [5, 7, 47], [7, 7, 47], [9, 7, 47], [11, 7, 8], [2, 8, 46], [4, 8, 46], [6, 8, 46], [8, 8, 46], [10, 8, 46], [11, 8, 8], [1, 9, 47], [3, 9, 47], [5, 9, 47], [7, 9, 47], [9, 9, 47], [11, 9, 8], [1, 10, 1], [3, 10, 1], [4, 10, 17], [5, 10, 1], [7, 10, 1], [9, 10, 1], [10, 10, 17], [11, 10, 8], [6, 10, 17], [8, 10, 17]], "preset": [], "inv": [[26, 1], [42, 1], [9, 1], [4, 1], [2, 1], [10, 1]], "pots": [[1, 1], [5, 1]], "metapaso": 60}], "claves": ["     ", "TITAN", "RADAR", "DELTA", "GAUSS", "ZENIT", "ATLAS", "VOLGA", "KOBRA", "BERTA", "MARTE", "HENRY", "NIMBO", "TESLA", "VULCA", "ARGOS", "AMPER", "BIELA", "BOREA", "CIRIO", "OMEGA"], "girar": [0, 1, 3, 12, 4, 5, 6, 7, 8, 9, 10, 2, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 36, 37, 34, 35, 30, 31, 32, 33, 26, 27, 28, 29, 38, 39, 40, 41, 45, 42, 43, 44, 46, 47], "refleja": [0, 1, 3, 2, 4, 6, 5, 7, 8, 9, 10, 12, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 26, 29, 28, 30, 31, 32, 33, 37, 36, 35, 34, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]};
+
+// ---------------------------------------------------------------------
+// DIBUJAR COMO EL SPECTRUM: un mapa de bits y una rejilla de atributos.
+// Cada tesela son 32 bytes (16 filas x 2) y sus CUATRO atributos, uno por
+// cuadrante de 8x8 — por eso una pieza puede tener dos colores pero no
+// mas de uno en cada cuarto. Es la misma regla que manda en el arte.
+// ---------------------------------------------------------------------
+const PAL  = ['#000','#00c','#c00','#c0c','#0c0','#0cc','#cc0','#ccc'];
+const PALB = ['#000','#00f','#f00','#f0f','#0f0','#0ff','#ff0','#fff'];
+const b2a = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const TILES = D.tiles.map(b2a), GEL = b2a(D.gel), RIV = b2a(D.riv),
+      BOLA = b2a(D.bola), MGFX = b2a(D.mgfx);
+const MARCO = new Map(D.marco.map(([c,r,t,a]) => [r*16+c, [t,a]]));
+const TINTA = {}; for (const k in D.tinta) TINTA[+k] = D.tinta[k];
+const T_GOAL = 7, A_CABLE = 6+64, L_NONE = 7;
+
+const cv = document.getElementById('pan'), cx = cv.getContext('2d');
+let ESC = 2;                                   // pixeles de pantalla por pixel
+function ajusta() {
+  const ancho = Math.min(window.innerWidth - 16, 512);
+  ESC = Math.max(1, Math.floor(ancho / 256));
+  cv.width = 256*ESC; cv.height = 192*ESC;
+}
+
+function tinta(a){ return (a & 64 ? PALB : PAL)[a & 7]; }
+function papel(a){ return (a & 64 ? PALB : PAL)[(a >> 3) & 7]; }
+
+// pinta una tesela de 16x16 con sus cuatro atributos
+function tesela(c, r, bytes, att) {
+  for (let f = 0; f < 16; f++) {
+    for (let mitad = 0; mitad < 2; mitad++) {
+      const b = bytes[f*2 + mitad];
+      const a = att[(f >= 8 ? 2 : 0) + mitad];
+      cx.fillStyle = papel(a);
+      cx.fillRect((c*16 + mitad*8)*ESC, (r*16 + f)*ESC, 8*ESC, ESC);
+      cx.fillStyle = tinta(a);
+      for (let bit = 0; bit < 8; bit++)
+        if (b & (0x80 >> bit))
+          cx.fillRect((c*16 + mitad*8 + bit)*ESC, (r*16 + f)*ESC, ESC, ESC);
+    }
+  }
+}
+
+function dibuja(est) {
+  const {g, k, b} = est;
+  // LA CASILLA DE SALIDA LLEVA BORNE. El juego la dibuja con la misma
+  // pieza que la cesta (lo hace `drawcell`), aunque en la rejilla este
+  // vacia. Sin esto el borne no aparece y la bola sale de la nada.
+  const salida = nivel ? nivel.ball[1]*16 + nivel.ball[0] : -1;
+  for (let r = 0; r < 12; r++) for (let c = 0; c < 16; c++) {
+    const i = r*16 + c, m = MARCO.get(i);
+    const ley = k[i], pieza = (i === salida) ? T_GOAL : g[i];
+    if (m) {
+      // EL MARCO TAMBIEN SE PINTA. El suelo del tablero es parte del
+      // anillo, y varias fases lo pintan de hielo o de rebote: si se
+      // dibuja siempre con su color de origen, esas casillas se ven
+      // grises y el jugador no ve donde ha pintado (fases 6 y 7).
+      const a = (ley !== L_NONE) ? TINTA[ley] : m[1];
+      tesela(c, r, MGFX.subarray(m[0]*32, m[0]*32+32), [a,a,a,a]);
+      continue;
+    }
+    if (!pieza && ley === L_NONE) { tesela(c, r, RIV, [A_CABLE,A_CABLE,A_CABLE,A_CABLE]); }
+    else if (pieza) {
+      const att = (pieza === T_GOAL || ley === L_NONE)
+                ? D.att.slice(pieza*4, pieza*4+4)
+                : [TINTA[ley],TINTA[ley],TINTA[ley],TINTA[ley]];
+      tesela(c, r, TILES[pieza], att);
+    } else {
+      const t = TINTA[ley];
+      tesela(c, r, GEL, [t,t,t,t]);
+    }
+  }
+  // LA BOLA: 10 filas de 3 bytes, mascara y dibujo alternados, ya
+  // desplazada 3 pixeles (igual que `maskball` en el juego).
+  if (b) {
+    const x0 = (b.x >> 4) - 8 + 3, y0 = (b.y >> 4) - 8 + 3;
+    for (let f = 0; f < 10; f++) for (let by = 0; by < 3; by++) {
+      const dato = BOLA[f*6 + by*2 + 1];
+      cx.fillStyle = '#fff';
+      for (let bit = 0; bit < 8; bit++)
+        if (dato & (0x80 >> bit)) {
+          const px = ((x0 >> 3) << 3) + by*8 + bit, py = y0 + f;
+          if (px>=0 && px<256 && py>=0 && py<192) cx.fillRect(px*ESC, py*ESC, ESC, ESC);
+        }
+    }
+  }
+  // el cursor, si estamos editando
+  if (cursor >= 0 && !corriendo) {
+    cx.strokeStyle = '#ff0'; cx.lineWidth = Math.max(1, ESC);
+    cx.strokeRect((cursor%16)*16*ESC + ESC/2, ((cursor/16|0)*16)*ESC + ESC/2,
+                  16*ESC - ESC, 16*ESC - ESC);
+  }
+}
+
+// ---------------------------------------------------------------------
+// ESTADO DE LA PARTIDA
+// ---------------------------------------------------------------------
+let nivel = null, puestas = [], pinturas = [], stockP = {}, stockM = {};
+let bola = null, corriendo = false, cursor = -1, ultimoToque = -1;
+
+const SALCODO = {26:1, 27:-1, 28:-1, 29:1, 34:16, 35:-16, 36:-16, 37:16};
+const esBoca  = t => (t >= 30 && t <= 33) || (t >= 38 && t <= 41);
+
+function rejillas() {
+  const L = {...nivel, fixed: nivel.fixed};
+  const g = S.buildGrid(L, puestas);
+  const k = S.buildInk(L, (nivel.preset||[]).concat(pinturas));
+  return {g, k, b: bola};
+}
+
+function empieza(n) {
+  nivel = D.niveles[n]; puestas = []; pinturas = []; bola = null;
+  corriendo = false; cursor = -1; ultimoToque = -1;
+  stockP = {}; for (const [t,q] of nivel.inv) stockP[t] = q;
+  stockM = {}; for (const [t,q] of nivel.pots) stockM[t] = q;
+  document.getElementById('titulo').textContent = (n+1) + '. ' + nivel.name;
+  document.getElementById('frase').textContent = nivel.brief;
+  document.getElementById('lista').style.display = 'none';
+  pinta();
+}
+function pinta(){ ajusta(); dibuja(rejillas()); }
+
+// ---------------------------------------------------------------------
+// EL CONTROL DE WILSON: un toque pone el cursor, otro toque en la MISMA
+// casilla abre el menu. A partir de ahi todo es un toque.
+// ---------------------------------------------------------------------
+cv.addEventListener('pointerdown', ev => {
+  if (corriendo) return;
+  const caja = cv.getBoundingClientRect();
+  const c = Math.floor((ev.clientX - caja.left) / (16*ESC));
+  const r = Math.floor((ev.clientY - caja.top)  / (16*ESC));
+  if (c < 0 || c > 15 || r < 0 || r > 11) return;
+  const i = r*16 + c;
+  if (i === cursor && i === ultimoToque) abreMenu(i);
+  else { cursor = i; ultimoToque = i; pinta(); }
+});
+
+const NOMBRE = {1:'LADRILLO',2:'RAMPA',4:'TRAMPOLIN',5:'CINTA',9:'VENTILADOR',
+                10:'IMAN',18:'AGUA',26:'CAÑON',42:'PINBALL',46:'ROMBO',47:'BUMPER'};
+const NOMLEY = {1:'GELATINA',4:'REBOTE',5:'HIELO'};
+
+function miniatura(pieza, ley) {
+  const c = document.createElement('canvas'); c.width = c.height = 16;
+  const g = c.getContext('2d'); const guardaESC = ESC, guardaCX = cx;
+  // se dibuja con el mismo pintor, a escala 1, sobre este canvas
+  const bytes = pieza != null ? TILES[pieza] : GEL;
+  const att = pieza != null && ley == null ? D.att.slice(pieza*4, pieza*4+4)
+            : [TINTA[ley],TINTA[ley],TINTA[ley],TINTA[ley]];
+  for (let f = 0; f < 16; f++) for (let mitad = 0; mitad < 2; mitad++) {
+    const b = bytes[f*2+mitad], a = att[(f>=8?2:0)+mitad];
+    g.fillStyle = papel(a); g.fillRect(mitad*8, f, 8, 1);
+    g.fillStyle = tinta(a);
+    for (let bit = 0; bit < 8; bit++)
+      if (b & (0x80>>bit)) g.fillRect(mitad*8+bit, f, 1, 1);
+  }
+  return c;
+}
+
+function opcion(rejilla, etiqueta, dibujo, accion) {
+  const d = document.createElement('div'); d.className = 'opt';
+  if (dibujo) d.appendChild(dibujo);
+  const s = document.createElement('small'); s.textContent = etiqueta;
+  d.appendChild(s);
+  d.onclick = () => { cierraMenu(); accion(); pinta(); };
+  rejilla.appendChild(d);
+}
+
+function abreMenu(i) {
+  const {g, k} = rejillas();
+  const pieza = g[i], ley = k[i];
+  const mia = puestas.find(p => p[1]*16+p[0] === i);
+  const rej = document.getElementById('menurejilla'); rej.innerHTML = '';
+
+  if (!pieza) {
+    // CASILLA VACIA: solo se puede PONER algo. (El aire no se pinta: es
+    // regla de Wilson desde el 2/11/2026, `leyok[0] = 000`.)
+    for (const t in stockP) if (stockP[t] > 0)
+      opcion(rej, (NOMBRE[t]||('#'+t)) + ' x' + stockP[t], miniatura(+t, null),
+             () => pon(+t, i));
+  } else {
+    if (mia) {
+      const t = mia[2];
+      if (D.girar[t] !== t)   opcion(rej, 'GIRAR',  miniatura(D.girar[t], null),   () => cambia(mia, D.girar[t]));
+      if (D.refleja[t] !== t) opcion(rej, 'ESPEJO', miniatura(D.refleja[t], null), () => cambia(mia, D.refleja[t]));
+      opcion(rej, 'QUITAR', null, () => quita(mia));
+    } else if (!esBoca(pieza) && !SALCODO[pieza]) {
+      // EL DECORADO TAMBIEN SE GIRA (Wilson, 7/11/2026) menos los cañones,
+      // que son de dos casillas y se duplicarian.
+      if (D.girar[pieza] !== pieza)
+        opcion(rej, 'GIRAR', miniatura(D.girar[pieza], null), () => giraFijo(i, D.girar[pieza]));
+      if (D.refleja[pieza] !== pieza)
+        opcion(rej, 'ESPEJO', miniatura(D.refleja[pieza], null), () => giraFijo(i, D.refleja[pieza]));
+    }
+    // LOS MODIFICADORES: solo los que la pieza admite (tabla LEYOK, la
+    // misma del juego: el acero no admite ninguno, el ladrillo los tres).
+    const BIT = {1:1, 4:2, 5:4};
+    for (const m in stockM) if (stockM[m] > 0 && (S.LEYOK[pieza] & BIT[m]) && ley === L_NONE)
+      opcion(rej, NOMLEY[m] + ' x' + stockM[m], miniatura(pieza, +m), () => pinta_ley(i, +m));
+    if (ley !== L_NONE && pinturas.some(p => p[1]*16+p[0] === i))
+      opcion(rej, 'GOMA', null, () => despinta(i));
+  }
+  opcion(rej, 'CERRAR', null, () => {});
+  document.getElementById('menu').style.display = 'flex';
+}
+function cierraMenu(){ document.getElementById('menu').style.display = 'none'; }
+document.getElementById('menu').onclick = e => { if (e.target.id === 'menu') cierraMenu(); };
+
+// --- las acciones -----------------------------------------------------
+function pon(t, i) {
+  const c = i & 15, r = i >> 4;
+  const d = SALCODO[t];
+  if (d !== undefined) {                       // EL CAÑON SON DOS CASILLAS
+    const i2 = i + d;
+    if (d === 1 && c === 15) return; if (d === -1 && c === 0) return;
+    if (i2 < 0 || i2 > 191) return;
+    const {g} = rejillas(); if (g[i2]) return;
+    puestas.push([c, r, t], [i2 & 15, i2 >> 4, t + 4]);
+  } else puestas.push([c, r, t]);
+  stockP[t]--;
+}
+function quita(p) {
+  const t = p[2];
+  puestas = puestas.filter(q => q !== p);
+  if (SALCODO[t] !== undefined) {              // y su boca se va con el
+    const i2 = (p[1]*16 + p[0]) + SALCODO[t];
+    puestas = puestas.filter(q => q[1]*16+q[0] !== i2);
+  }
+  stockP[t]++;
+  const i = p[1]*16 + p[0];
+  pinturas = pinturas.filter(q => q[1]*16+q[0] !== i);
+}
+function cambia(p, nuevo) {
+  if (SALCODO[p[2]] !== undefined) {           // mover tambien la boca
+    const viejo = (p[1]*16+p[0]) + SALCODO[p[2]];
+    const nueva = (p[1]*16+p[0]) + SALCODO[nuevo];
+    if (nueva < 0 || nueva > 191) return;
+    const cN = nueva & 15;
+    if (SALCODO[nuevo] === 1 && p[0] === 15) return;
+    if (SALCODO[nuevo] === -1 && p[0] === 0) return;
+    puestas = puestas.filter(q => q[1]*16+q[0] !== viejo);
+    const {g} = rejillas();
+    if (g[nueva]) { puestas.push([viejo&15, viejo>>4, p[2]+4]); return; }
+    puestas.push([cN, nueva>>4, nuevo+4]);
+  }
+  p[2] = nuevo;
+}
+function giraFijo(i, nuevo) { puestas.push([i&15, i>>4, nuevo]); }
+function pinta_ley(i, m) { pinturas.push([i&15, i>>4, m]); stockM[m]--; }
+function despinta(i) {
+  const p = pinturas.find(q => q[1]*16+q[0] === i);
+  if (p) { stockM[p[2]]++; pinturas = pinturas.filter(q => q !== p); }
+}
+
+// ---------------------------------------------------------------------
+// LA TIRADA: el motor de verdad, 50 pasos por segundo
+// ---------------------------------------------------------------------
+let timer = null;
+function suelta() {
+  if (corriendo) return;
+  cierraMenu();
+  const L = nivel;
+  const g = S.buildGrid(L, puestas);
+  const k = S.buildInk(L, (L.preset||[]).concat(pinturas));
+  bola = S.newBall(L); corriendo = true;
+  let f = 0;
+  timer = setInterval(() => {
+    S.step(g, k, bola); f++;
+    dibuja({g, k, b: bola});
+    if (bola.state || f > 2000) {
+      clearInterval(timer); corriendo = false;
+      document.getElementById('frase').textContent =
+        bola.state === 1 ? '¡DENTRO!' : (bola.state === 2 ? 'La bola se ha perdido' : 'No llega');
+      if (bola.state !== 1) setTimeout(() => { bola = null; pinta();
+        document.getElementById('frase').textContent = nivel.brief; }, 1200);
+    }
+  }, 20);
+}
+document.getElementById('bsuelta').onclick = suelta;
+document.getElementById('breset').onclick = () => {
+  if (timer) clearInterval(timer);
+  corriendo = false; empieza(D.niveles.indexOf(nivel));
+};
+document.getElementById('bsalir').onclick = () => {
+  if (timer) clearInterval(timer); corriendo = false;
+  document.getElementById('lista').style.display = 'flex';
+  document.getElementById('titulo').textContent = 'OPERATION IRON FIST';
+  document.getElementById('frase').textContent = 'elige una fase';
+};
+
+// --- la lista de fases ------------------------------------------------
+const lista = document.getElementById('lista');
+D.niveles.forEach((L, n) => {
+  const b = document.createElement('button');
+  b.textContent = (n+1) + '. ' + L.name;
+  b.onclick = () => empieza(n);
+  lista.appendChild(b);
+});
+window.addEventListener('resize', () => { if (nivel) pinta(); });
+document.getElementById('bsalir').onclick();
+ajusta();
+</script>
