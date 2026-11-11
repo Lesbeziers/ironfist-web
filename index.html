@@ -957,7 +957,11 @@ function pinta(){ ajusta(); dibuja(rejillas()); }
 // EL CONTROL DE WILSON: un toque pone el cursor, otro toque en la MISMA
 // casilla abre el menu. A partir de ahi todo es un toque.
 // ---------------------------------------------------------------------
-cv.addEventListener('pointerdown', ev => {
+// SE ACTUA AL LEVANTAR EL DEDO, NO AL TOCAR (Wilson, jugando en tablet:
+// "el segundo click hay que mantenerlo todo el rato para que este el
+// menu"). Abriendolo en `pointerdown`, el `click` de ESE MISMO toque caia
+// encima del menu recien abierto y lo cerraba: un toque hacia dos cosas.
+cv.addEventListener('click', ev => {
   if (corriendo) return;
   const caja = cv.getBoundingClientRect();
   const c = Math.floor((ev.clientX - caja.left) / (16*ESC));
@@ -998,7 +1002,12 @@ function opcion(rejilla, etiqueta, dibujo, accion) {
   rejilla.appendChild(d);
 }
 
+// Y EL FONDO NO CIERRA NADA DURANTE UN INSTANTE. Aunque se abra al
+// levantar, en algunos navegadores el toque genera un evento mas que
+// llega ya con el menu puesto. Con esta ventana muerta no se cuela.
+let menuAbiertoEn = 0;
 function abreMenu(i) {
+  menuAbiertoEn = Date.now();
   const {g, k} = rejillas();
   const pieza = g[i], ley = k[i];
   const mia = puestas.find(p => p[1]*16+p[0] === i);
@@ -1036,7 +1045,10 @@ function abreMenu(i) {
   document.getElementById('menu').style.display = 'flex';
 }
 function cierraMenu(){ document.getElementById('menu').style.display = 'none'; }
-document.getElementById('menu').onclick = e => { if (e.target.id === 'menu') cierraMenu(); };
+document.getElementById('menu').onclick = e => {
+  if (Date.now() - menuAbiertoEn < 350) return;      // el toque que lo abrio
+  if (e.target.id === 'menu') cierraMenu();
+};
 
 // --- las acciones -----------------------------------------------------
 function pon(t, i) {
