@@ -978,7 +978,11 @@ function pinta(){ ajusta(); dibuja(rejillas()); }
 // menu"). Abriendolo en `pointerdown`, el `click` de ESE MISMO toque caia
 // encima del menu recien abierto y lo cerraba: un toque hacia dos cosas.
 cv.addEventListener('click', ev => {
-  if (corriendo) return;
+  // TOCAR EL TABLERO MIENTRAS CORRE = VOLVER A EDITAR. Tener que buscar
+  // el boton PARAR para seguir montando era un paso de mas: lo natural
+  // es tocar donde quieres cambiar algo (Wilson, 9/11/2026). El toque se
+  // gasta en parar; el siguiente ya mueve el cursor.
+  if (corriendo) { para(); return; }
   // SE MIDE SOBRE EL TAMAÑO EN PANTALLA, no sobre ESC: el lienzo se
   // escala con CSS, asi que un pixel dibujado y un pixel tocado ya no
   // valen lo mismo.
@@ -1147,13 +1151,18 @@ function suelta() {
 // EL MISMO BOTON SUELTA Y PARA. Sin un "parar", una tirada que no acaba
 // —la bola dando vueltas o atascada— te dejaba mirando sin poder volver.
 const boton = document.getElementById('bsuelta');
+// PARAR Y VOLVER A EDITAR, sin tocar el montaje. Lo llaman el boton y
+// tambien un toque en el tablero.
+function para() {
+  if (timer) clearInterval(timer);
+  timer = null; corriendo = false; bola = null;
+  boton.textContent = 'SOLTAR';
+  document.getElementById('frase').textContent = nivel.brief;
+  pinta();
+}
 boton.onclick = () => {
-  if (corriendo) {
-    clearInterval(timer); timer = null; corriendo = false;
-    bola = null; boton.textContent = 'SOLTAR';
-    document.getElementById('frase').textContent = nivel.brief;
-    pinta();
-  } else { boton.textContent = 'PARAR'; suelta(); }
+  if (corriendo) para();
+  else { boton.textContent = 'PARAR'; suelta(); }
 };
 document.getElementById('breset').onclick = () => {
   if (timer) clearInterval(timer);
