@@ -1090,17 +1090,37 @@ document.getElementById('menu').onclick = e => {
 };
 
 // --- las acciones -----------------------------------------------------
+// ?CABE LA BOCA DE ESTE CAÑON EN ESA CASILLA? El cañon son DOS casillas:
+// el codo donde tocas y la boca al lado, en el sentido en que dispara.
+function bocaCabe(t, i) {
+  const c = i & 15, d = SALCODO[t];
+  if (d === 1 && c === 15) return false;
+  if (d === -1 && c === 0)  return false;
+  const i2 = i + d;
+  if (i2 < 0 || i2 > 191) return false;
+  const {g} = rejillas();
+  return !g[i2] && i2 !== (nivel.goal[1]*16 + nivel.goal[0]);
+}
+
 function pon(t, i) {
   const c = i & 15, r = i >> 4;
-  const d = SALCODO[t];
-  if (d !== undefined) {                       // EL CAÑON SON DOS CASILLAS
-    const i2 = i + d;
-    if (d === 1 && c === 15) return; if (d === -1 && c === 0) return;
-    if (i2 < 0 || i2 > 191) return;
-    const {g} = rejillas(); if (g[i2]) return;
-    puestas.push([c, r, t], [i2 & 15, i2 >> 4, t + 4]);
-  } else puestas.push([c, r, t]);
-  stockP[t]--;
+  if (SALCODO[t] === undefined) { puestas.push([c, r, t]); stockP[t]--; return; }
+  // EL CAÑON SE PONE EN LA PRIMERA POSTURA QUE QUEPA, girandolo por su
+  // rueda — es lo que hace `tubobusca` en el juego. Antes, si la boca no
+  // entraba (un cañon pegado a un muro), no pasaba NADA: ni se ponia ni
+  // se avisaba, y parecia que la pieza no existia (Wilson, 9/11/2026).
+  let p = t;
+  for (let v = 0; v < 4; v++) {
+    if (bocaCabe(p, i)) {
+      puestas.push([c, r, p], [(i + SALCODO[p]) & 15, (i + SALCODO[p]) >> 4, p + 4]);
+      stockP[t]--;
+      return;
+    }
+    p = D.girar[p];
+  }
+  // NINGUNA POSTURA CABE: se dice, en vez de no hacer nada.
+  document.getElementById('frase').textContent = 'El cañon no cabe ahi';
+  setTimeout(() => { document.getElementById('frase').textContent = nivel.brief; }, 1500);
 }
 function quita(p) {
   const t = p[2];
